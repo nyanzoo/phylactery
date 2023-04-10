@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: [ "master" ]
+    branches: ["master"]
   pull_request:
-    branches: [ "master" ]
+    branches: ["master"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -89,5 +89,5 @@ jobs:
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v2
         with:
-          # token: ${{secrets.CODECOV_TOKEN}} # not required for public repos
+          token: ${{secrets.CODECOV_TOKEN}} # not required for public repos
           fail_ci_if_error: true
