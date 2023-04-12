@@ -50,4 +50,7 @@ The ring buffer exposes the following public methods:
 - Capacity: returns the maximum number of entries the buffer can hold
 
 ### Configuration
-The ring buffer should be configurable for maximum size and default TTL.
+The ring buffer should be configurable for the following options:
+- **Path**: the path to the file to use for the ring buffer
+- **Size**: the maximum number of bytes the buffer can hold
+- **TTL**: the default time to live for entries in the buffer
