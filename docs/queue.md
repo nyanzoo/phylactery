@@ -1,7 +1,6 @@
 # Queue
 A FIFO persisted collection, which can grow as needed and should require little to no compaction.
 
-
 ## Design
 At a high-level there are two layers to the queue implementation. First is a [mmap](https://man7.org/linux/man-pages/man2/mmap.2.html)'d buffer for reads and writes to offer performance at the cost of copying data when it comes to permanent data residence and potential flash memory degradation (TODO: confirm this is true). Second is a series of files that are the permanent locations of data.
 
@@ -45,6 +44,8 @@ The queue exposes the following public methods:
 - Capacity: returns the maximum number of entries the buffer can hold
 
 ### Configuration
-The queue should be configurable for maximum size and default TTL.
-
-
+The queue should be configurable with the following options:
+- **Path**: the path to the directory where the queue files will be stored
+- **File Size**: the size of each file in the queue
+- **Max Size**: the maximum amount of bytes the queue can hold
+- **Default TTL**: the default TTL for entries in the queue
