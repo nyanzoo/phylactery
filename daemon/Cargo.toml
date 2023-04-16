@@ -1,8 +1,22 @@
 [package]
+edition = "2021"
 name = "daemon"
 version = "0.1.0"
-edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "daemon"
+path = "src/main.rs"
+
 [dependencies]
+dashmap = "5"
+env_logger = "0"
+log = "0"
+memmap2 = "0"
+prost = "0"
+tokio = {version = "1", features = ["full"]}
+tonic = "0"
+
+[build-dependencies]
+tonic-build = "0"

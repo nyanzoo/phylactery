@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package phylactery;
+
+service SubmissionQueue {
+  rpc Submit(Submission) returns (SubmissionResponse) {}
+}
+
+message File {
+  string name = 1;
+  uint32 size = 2;
+}
+
+message Close { string name = 1; }
+
+message Copy {
+  repeated File src = 1;
+  File dst = 2;
+}
+
+message Delete { string name = 1; }
+
+message Open { File file = 1; }
+
+message Read {
+  string src = 1;
+  File dst = 2;
+}
+
+message Write {
+  File src = 1;
+  string dst = 2;
+}
+
+message Submission {
+  oneof operation {
+    Close close = 1;
+    Copy copy = 2;
+    Delete delete = 3;
+    Open open = 4;
+    Read read = 5;
+    Write write = 6;
+  };
+
+  uint32 id = 7;
+}
+
+message SubmissionResponse {}
