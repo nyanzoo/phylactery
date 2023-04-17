@@ -31,6 +31,7 @@ jobs:
           command: check
 
   test:
+    needs: [clippy]
     name: Test Suite
     strategy:
       matrix:
@@ -71,6 +72,7 @@ jobs:
           args: --all -- --check
 
   clippy:
+    needs: [fmt, check]
     name: Clippy
     strategy:
       matrix:
@@ -93,6 +95,7 @@ jobs:
 
   # ref: https://morioh.com/p/bfe6c22e43bf
   coverage:
+    needs: [test]
     name: Coverage
     strategy:
       matrix:
