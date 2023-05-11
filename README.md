@@ -19,5 +19,8 @@ A key-value store that stores everything to disk.
 A structure that represents the order in which operations are performed on a store.
 This is useful in the event one wants to recreate an *exact* replica.
 
+## Coverage
+see `https://github.com/taiki-e/cargo-llvm-cov#installation` for instructions.
+
 ## Contributing
 TODO

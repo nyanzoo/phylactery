@@ -3,14 +3,14 @@ use std::sync::{
     Arc,
 };
 
-use crate::{buffer::Buffer, codec::Encode};
-
-use self::{
-    entry::{Data, Metadata, Version},
-    error::Error,
+use crate::{
+    buffer::Buffer,
+    codec::Encode,
+    entry::{crc_check, last_metadata, Data, Metadata, Version},
 };
 
-pub mod entry;
+use self::error::Error;
+
 pub mod error;
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
@@ -32,16 +32,16 @@ impl<B> RingBuffer<B>
 where
     B: Buffer,
 {
-    pub fn new(buffer: B) -> Result<Self, Error> {
-        Ok(Self(Arc::new(Inner::new(buffer)?)))
+    pub fn new(buffer: B, version: Version) -> Result<Self, Error> {
+        Ok(Self(Arc::new(Inner::new(buffer, version)?)))
     }
 
-    pub fn push(&self, version: Version, buf: &[u8]) -> Result<(), Error> {
-        self.0.push(version, buf)
+    pub fn push(&self, buf: &[u8]) -> Result<(), Error> {
+        self.0.push(buf)
     }
 
-    pub fn pop(&self, version: Version, buf: &mut [u8]) -> Result<usize, Error> {
-        self.0.pop(version, buf)
+    pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.0.pop(buf)
     }
 
     #[cfg(test)]
@@ -71,6 +71,9 @@ where
     // current entry
     entry: AtomicU64,
 
+    // version of the ring buffer.
+    version: Version,
+
     // The buffer itself.
     buffer: B,
 }
@@ -80,59 +83,17 @@ where
     B: Buffer,
 {
     // Create a new ring buffer.
-    pub fn new(buffer: B) -> Result<Self, Error> {
+    pub fn new(buffer: B, version: Version) -> Result<Self, Error> {
         let mut read_ptr = 0;
         let mut write_ptr = 0;
         let mut entry = 0;
+        let mut has_data = false;
 
-        let mut off = 0;
-        let has_data = loop {
-            let mut header = [0u8; 4];
-            buffer.read_at(&mut header, off)?;
-            // TODO: should be little endian?
-            // D5EED5BA
-            match header {
-                // [0x0, 0x0, 0x0, 0x0] => break false,
-                [0xd5, 0xee, 0xd5, 0xba] => break true,
-                [_, 0xd5, 0xee, 0xd5] => off += 1,
-                [_, _, 0xd5, 0xee] => off += 2,
-                [_, _, _, 0xd5] => off += 3,
-                _ => off += 4,
-            }
-
-            if off as u64 >= buffer.capacity() {
-                break false;
-            }
-        };
-
-        if has_data {
-            // rollback 4 bytes to get start of entry.
-            off -= 4;
-
-            let mut ptrs = vec![];
-            while (off as u64 + Metadata::size(Version::V1) as u64) < buffer.capacity() {
-                // read the metadata.
-                let metadata: Metadata =
-                    buffer.decode_at(off, Metadata::size(Version::V1) as usize)?;
-
-                ptrs.push((metadata.read_ptr(), metadata.write_ptr(), metadata.entry()));
-
-                // increment the offset by the size of the metadata.
-                off += Metadata::size(Version::V1) as usize;
-                // increment the offset by the size of the data.
-                off += metadata.data_size() as usize;
-            }
-
-            // The last entry is the one with the highest entry value.
-            ptrs.sort_by(|(_, _, entry1), (_, _, entry2)| entry1.cmp(entry2));
-            let (last_read, last_write, last_entry) =
-                ptrs.last().expect("ptrs should not be empty");
-            read_ptr = *last_read;
-            write_ptr = *last_write;
-            entry = *last_entry;
-
-            // what happens right now is that if we write to disk, and then read from disk, we cannot know
-            // what the last read entry was... is that okay? Let's think about this carefully.
+        if let Some(metadata) = last_metadata(&buffer, version)? {
+            read_ptr = metadata.read_ptr();
+            write_ptr = metadata.write_ptr();
+            entry = metadata.entry();
+            has_data = true;
         }
 
         Ok(Self {
@@ -141,6 +102,7 @@ where
             write_ptr: AtomicU64::new(write_ptr),
             peek_ptr: AtomicU64::new(0),
             entry: AtomicU64::new(entry),
+            version,
             buffer,
         })
     }
@@ -150,16 +112,15 @@ where
     ///
     /// # Example
     /// ```rust,ignore
-    /// ring_buffer.push(Version::V1, b"hello world")?;
+    /// ring_buffer.push(b"hello world")?;
     /// ```
     ///
     /// # Arguments
-    /// - `version`: A [`Version`] enum that specifies the version of the metadata being written.
-    /// - `data`: A slice of bytes that is the actual data being written to the buffer.
+    /// - `buf`: A slice of bytes that is the actual data being written to the buffer.
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push(&self, version: Version, buf: &[u8]) -> Result<(), Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<(), Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -169,11 +130,11 @@ where
         let entry = self.entry.load(Ordering::Acquire) + 1;
         let has_data = self.has_data.load(Ordering::Acquire);
 
-        let data = Data::new(version, buf);
-        let entry_size = Metadata::size(version) as u64
-            + Metadata::calculate_data_size(version, buf.len() as u32) as u64;
+        let data = Data::new(self.version, buf);
+        let entry_size = Metadata::size(self.version) as u64
+            + Metadata::calculate_data_size(self.version, buf.len() as u32) as u64;
         let metadata = Metadata::new(
-            version,
+            self.version,
             entry,
             read_ptr,
             write_ptr + entry_size,
@@ -190,7 +151,7 @@ where
 
         // check if metadata can fit without wrapping
         let mut has_wrapped = false;
-        if write_ptr + Metadata::size(version) as u64 > self.buffer.capacity() {
+        if write_ptr + Metadata::size(self.version) as u64 > self.buffer.capacity() {
             write_ptr = 0;
             has_wrapped = true;
         }
@@ -230,11 +191,11 @@ where
         // write metadata
         self.buffer.encode_at(
             write_ptr as usize,
-            Metadata::size(version) as usize,
+            Metadata::size(self.version) as usize,
             &metadata,
         )?;
 
-        write_ptr += Metadata::size(version) as u64;
+        write_ptr += Metadata::size(self.version) as u64;
 
         // write data
         if write_ptr + metadata.data_size() as u64 > self.buffer.capacity() {
@@ -269,20 +230,18 @@ where
     /// # Example
     /// ```rust, ignore
     /// let mut data = [0u8; 1024];
-    /// let data_size = ring_buffer.pop(Version::V1, &mut data)?;
+    /// let data_size = ring_buffer.pop(&mut data)?;
     /// ```
     ///
     /// # Parameters
-    /// - `version`: A [`Version`] enum representing the version to read data out with
-    ///    and *must* match what was written.
-    /// - `data`: The data buffer to write the entry into.
+    /// - `buf`: The data buffer to write the entry into.
     ///
     /// # Returns
     /// Result with size of data read as Ok variant, or an Error.
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn pop(&self, version: Version, buf: &mut [u8]) -> Result<usize, Error> {
+    pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
         let mut read_ptr = self.read_ptr.load(Ordering::Acquire);
         let write_ptr = self.write_ptr.load(Ordering::Acquire);
         let has_data = self.has_data.load(Ordering::Acquire);
@@ -293,13 +252,13 @@ where
         }
 
         // handle wrap around case
-        if read_ptr + Metadata::size(version) as u64 > self.buffer.capacity() {
+        if read_ptr + Metadata::size(self.version) as u64 > self.buffer.capacity() {
             read_ptr = 0;
         }
 
         let metadata = self
             .buffer
-            .decode_at::<Metadata>(read_ptr as usize, Metadata::size(version) as usize)?;
+            .decode_at::<Metadata>(read_ptr as usize, Metadata::size(self.version) as usize)?;
 
         // If the metadata CRC does not match, we can't read.
         metadata.verify()?;
@@ -312,7 +271,7 @@ where
             ));
         }
 
-        read_ptr += Metadata::size(version) as u64;
+        read_ptr += Metadata::size(self.version) as u64;
 
         // handle wrap around case
         if read_ptr + metadata.data_size() as u64 > self.buffer.capacity() {
@@ -361,15 +320,7 @@ where
             // TODO(rojang): it seems bincode uses little endian for u32, but we should
             // make sure this is the case always?
             let crc = u32::from_le_bytes(crc);
-            let mut calculated_crc = crc32fast::Hasher::new();
-            calculated_crc.update(&buf[..metadata.real_data_size() as usize]);
-            let calculated_crc = calculated_crc.finalize();
-            if crc != calculated_crc {
-                return Err(Error::DataCrcMismatch {
-                    expected: crc,
-                    actual: calculated_crc,
-                });
-            }
+            crc_check(crc, &buf[..metadata.real_data_size() as usize])?;
 
             read_ptr += 4;
         } else {
@@ -407,9 +358,10 @@ mod tests {
     use crate::{
         buffer::{InMemBuffer, MmapBuffer},
         codec::Encode,
+        entry::{self, Data, Metadata, Version},
     };
 
-    use super::{entry::Data, entry::Metadata, entry::Version, error::Error, RingBuffer};
+    use super::{error::Error, RingBuffer};
 
     #[test]
     fn test_init() {
@@ -418,21 +370,21 @@ mod tests {
         let buffer =
             MmapBuffer::new(dir.path().to_path_buf().join("test_buffer"), 1024).expect("buffer");
 
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         for _ in 0..5 {
-            ring_buffer.push(Version::V1, b"kittens").expect("push");
+            ring_buffer.push(b"kittens").expect("push");
         }
 
         let mut buf = [0u8; 1024];
 
         for _ in 0..3 {
-            ring_buffer.pop(Version::V1, &mut buf).expect("pop");
+            ring_buffer.pop(&mut buf).expect("pop");
             assert_eq!(&buf[..7], b"kittens");
         }
 
         // We don't write the read ptr on reads, so to test we do another write.
-        ring_buffer.push(Version::V1, b"kittens").expect("push");
+        ring_buffer.push(b"kittens").expect("push");
 
         let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::Acquire);
         let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::Acquire);
@@ -442,7 +394,7 @@ mod tests {
         let buffer1 =
             MmapBuffer::new(dir.path().to_path_buf().join("test_buffer"), 1024).expect("buffer");
 
-        let ring_buffer2 = RingBuffer::new(buffer1).expect("new buffer");
+        let ring_buffer2 = RingBuffer::new(buffer1, Version::V1).expect("new buffer");
         assert_eq!(
             ring_buffer2.inner().read_ptr.load(Ordering::Acquire),
             expected_read_ptr
@@ -464,10 +416,10 @@ mod tests {
     #[test]
     fn test_pop_buffer_empty() {
         let buffer = InMemBuffer::new(1024);
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         let mut data = vec![0u8; 10];
-        let res = ring_buffer.pop(Version::V1, &mut data).unwrap_err();
+        let res = ring_buffer.pop(&mut data).unwrap_err();
         assert_matches!(res, Error::BufferEmpty);
     }
 
@@ -476,7 +428,7 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer
             .inner()
             .write_ptr
@@ -500,13 +452,13 @@ mod tests {
             .expect("write metadata");
 
         let mut data = vec![0u8; 20];
-        let result = ring_buffer.pop(Version::V1, &mut data);
+        let result = ring_buffer.pop(&mut data);
         assert_matches!(
             result.unwrap_err(),
-            Error::MetadataCrcMismatch {
+            Error::Entry(entry::Error::MetadataCrcMismatch {
                 expected: 1234567,
                 actual: 1970696030,
-            }
+            })
         );
     }
 
@@ -515,7 +467,7 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer
             .inner()
             .write_ptr
@@ -542,16 +494,16 @@ mod tests {
             .unwrap();
         data.encode(&mut buf[Metadata::size(Version::V1) as usize..])
             .unwrap();
-        file.write(&buf).expect("write");
+        file.write_all(&buf).expect("write");
 
         let mut data = vec![0u8; 40];
-        let result = ring_buffer.pop(Version::V1, &mut data);
+        let result = ring_buffer.pop(&mut data);
         assert_matches!(
             result.unwrap_err(),
-            Error::DataCrcMismatch {
+            Error::Entry(entry::Error::DataCrcMismatch {
                 expected: 1234567,
                 actual: 222957957
-            }
+            })
         );
     }
 
@@ -560,7 +512,7 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer
             .inner()
             .write_ptr
@@ -577,13 +529,13 @@ mod tests {
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
         let data = Data::new(Version::V1, data.as_bytes());
 
-        file.write(bincode::serialize(&meta).unwrap().as_slice())
+        file.write_all(bincode::serialize(&meta).unwrap().as_slice())
             .expect("write metadata");
-        file.write(bincode::serialize(&data).unwrap().as_slice())
+        file.write_all(bincode::serialize(&data).unwrap().as_slice())
             .expect("write data");
 
         let mut data = vec![0u8; 1];
-        let result = ring_buffer.pop(Version::V1, &mut data);
+        let result = ring_buffer.pop(&mut data);
         assert_matches!(result.unwrap_err(), Error::BufferTooSmall(1, 11));
     }
 
@@ -595,7 +547,7 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer.inner().write_ptr.store(0, Ordering::Release);
         ring_buffer
             .inner()
@@ -619,16 +571,16 @@ mod tests {
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
-        file.write(bincode::serialize(&meta).unwrap().as_slice())
+        file.write_all(bincode::serialize(&meta).unwrap().as_slice())
             .expect("write metadata");
 
         file.seek(SeekFrom::Start(DATA_SPOT as u64))
             .expect("seek to start");
-        file.write(bincode::serialize(&data).unwrap().as_slice())
+        file.write_all(bincode::serialize(&data).unwrap().as_slice())
             .expect("write data");
 
         let mut data = vec![0u8; 11];
-        let _ = ring_buffer.pop(Version::V1, &mut data).unwrap();
+        let _ = ring_buffer.pop(&mut data).unwrap();
         assert_matches!(data.as_slice(), b"hello world");
     }
 
@@ -641,7 +593,7 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer.inner().write_ptr.store(0, Ordering::Release);
         ring_buffer
             .inner()
@@ -665,23 +617,23 @@ mod tests {
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
-        file.write(bincode::serialize(&meta).unwrap().as_slice())
+        file.write_all(bincode::serialize(&meta).unwrap().as_slice())
             .expect("write metadata");
 
         file.seek(SeekFrom::Start(DATA_SPOT1 as u64))
             .expect("seek to start");
         let data = bincode::serialize(&data).unwrap();
         let data = data.as_slice();
-        file.write(&data[..(1024 - DATA_SPOT1) as usize])
+        file.write_all(&data[..(1024 - DATA_SPOT1) as usize])
             .expect("write data");
 
         file.seek(SeekFrom::Start(DATA_SPOT2 as u64))
             .expect("seek to start");
-        file.write(&data[(1024 - DATA_SPOT1) as usize..])
+        file.write_all(&data[(1024 - DATA_SPOT1) as usize..])
             .expect("write data");
 
         let mut data = vec![0u8; 11];
-        let _ = ring_buffer.pop(Version::V1, &mut data).unwrap();
+        let _ = ring_buffer.pop(&mut data).unwrap();
         assert_matches!(data.as_slice(), b"hello world");
     }
 
@@ -692,7 +644,7 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer.inner().write_ptr.store(0, Ordering::Release);
         ring_buffer
             .inner()
@@ -719,10 +671,10 @@ mod tests {
             .unwrap();
         data.encode(&mut buf[Metadata::size(Version::V1) as usize..])
             .unwrap();
-        file.write(&buf).expect("write");
+        file.write_all(&buf).expect("write");
 
         let mut data = vec![0u8; 11];
-        let _ = ring_buffer.pop(Version::V1, &mut data).unwrap();
+        let _ = ring_buffer.pop(&mut data).unwrap();
         assert_matches!(data.as_slice(), b"hello world");
     }
 
@@ -731,7 +683,7 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer
             .inner()
             .write_ptr
@@ -753,10 +705,10 @@ mod tests {
             .unwrap();
         data.encode(&mut buf[Metadata::size(Version::V1) as usize..])
             .unwrap();
-        file.write(&buf).expect("write");
+        file.write_all(&buf).expect("write");
 
         let mut data = vec![0u8; 11];
-        let _ = ring_buffer.pop(Version::V1, &mut data).unwrap();
+        let _ = ring_buffer.pop(&mut data).unwrap();
         assert_matches!(data.as_slice(), b"hello world");
     }
 
@@ -764,12 +716,12 @@ mod tests {
     fn test_push_entry_larger_than_buffer() {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
-        let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let buffer = MmapBuffer::new(file, 1024).expect("buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        let mut data = vec![0u8; 1024 as usize + 1];
+        let data = vec![0u8; 1024_usize + 1];
         assert_matches!(
-            ring_buffer.push(Version::V1, &mut data),
+            ring_buffer.push(&data),
             Err(Error::EntryLargerThanBuffer(_, _))
         );
     }
@@ -780,18 +732,15 @@ mod tests {
 
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
-        let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let buffer = MmapBuffer::new(file, 1024).expect("buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer
             .inner()
             .write_ptr
             .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
 
-        let mut data = vec![0u8; 40];
-        assert_matches!(
-            ring_buffer.push(Version::V1, &mut data),
-            Err(Error::EntryTooBig(_, _))
-        );
+        let data = vec![0u8; 40];
+        assert_matches!(ring_buffer.push(&data), Err(Error::EntryTooBig(_, _)));
     }
 
     #[test]
@@ -801,8 +750,8 @@ mod tests {
 
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
-        let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let buffer = MmapBuffer::new(file, 1024).expect("buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer
             .inner()
             .write_ptr
@@ -812,11 +761,8 @@ mod tests {
             .read_ptr
             .fetch_add(READ_WRAP as u64, Ordering::Acquire);
 
-        let mut data = vec![0u8; 40];
-        assert_matches!(
-            ring_buffer.push(Version::V1, &mut data),
-            Err(Error::EntryTooBig(_, _))
-        );
+        let data = vec![0u8; 40];
+        assert_matches!(ring_buffer.push(&data), Err(Error::EntryTooBig(_, _)));
     }
 
     #[test]
@@ -826,8 +772,8 @@ mod tests {
 
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
-        let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let buffer = MmapBuffer::new(file, 1024).expect("buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
         ring_buffer
             .inner()
             .write_ptr
@@ -839,10 +785,7 @@ mod tests {
         ring_buffer.inner().has_data.store(true, Ordering::Release);
 
         let data = "hello world 19".as_bytes();
-        assert_matches!(
-            ring_buffer.push(Version::V1, data),
-            Err(Error::EntryTooBig(_, _))
-        );
+        assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig(_, _)));
     }
 
     #[test]
@@ -850,10 +793,10 @@ mod tests {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        let mut data = "abcdefghijklmnopqrstuvwxyz".as_bytes().to_vec();
-        ring_buffer.push(Version::V1, &mut data).unwrap();
+        let data = "abcdefghijklmnopqrstuvwxyz".as_bytes().to_vec();
+        ring_buffer.push(&data).unwrap();
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -883,7 +826,7 @@ mod tests {
     #[test]
     fn thread_safety_test() {
         let buffer = InMemBuffer::new(1024);
-        let ring_buffer = RingBuffer::new(buffer).expect("new buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         let reader = {
             let ring_buffer = ring_buffer.clone();
@@ -891,7 +834,7 @@ mod tests {
                 let mut reads = vec![];
                 loop {
                     let mut data = vec![0u8; 20];
-                    match ring_buffer.pop(Version::V1, &mut data) {
+                    match ring_buffer.pop(&mut data) {
                         Ok(bytes) => {
                             data.truncate(bytes);
                             let s = unsafe { String::from_utf8_unchecked(data) };
@@ -925,7 +868,7 @@ mod tests {
                 let data = format!("hello world {}", i);
 
                 loop {
-                    match ring_buffer.push(Version::V1, data.as_bytes()) {
+                    match ring_buffer.push(data.as_bytes()) {
                         Ok(_) => {
                             break;
                         }

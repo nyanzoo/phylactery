@@ -72,3 +72,16 @@ impl Buffer for MmapBuffer {
         unsafe { &*self.0.get() }.len() as u64
     }
 }
+
+
+impl AsRef<[u8]> for MmapBuffer {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { &*self.0.get() }
+    }
+}
+
+impl AsMut<[u8]> for MmapBuffer {
+    fn as_mut(&mut self) -> &mut [u8] {
+        unsafe { &mut *self.0.get() }
+    }
+}

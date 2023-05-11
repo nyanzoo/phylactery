@@ -2,7 +2,7 @@
 A FIFO persisted collection, which can grow as needed and should require little to no compaction.
 
 ## Design
-At a high-level there are two layers to the queue implementation. First is a [mmap](https://man7.org/linux/man-pages/man2/mmap.2.html)'d buffer for reads and writes to offer performance at the cost of copying data when it comes to permanent data residence and potential flash memory degradation (TODO: confirm this is true). Second is a series of files that are the permanent locations of data.
+At a high-level there are two layers to the dequeue implementation. First is an in-memory buffer (a node in the dequeue) for reads and writes to be performant at the cost of copying data when it comes to permanent data residence and potential data loss if crash before flush. Second is a series of files that are the permanent locations of data and managed at the dequeue level (above node).
 
 The file layout on disk will look something like this:
 ```
@@ -37,7 +37,6 @@ The metadata hash is used to verify the integrity of the metadata and data hash 
 The queue exposes the following public methods:
 - Push: adds a new entry to the buffer
 - Pop: removes the next entry from the buffer
-- Peek: returns the next entry from the buffer without removing it, can be called multiple times to iterate over the buffer
 - Size: returns the number of entries in the buffer
 - Capacity: returns the maximum number of entries the buffer can hold
 
