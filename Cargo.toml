@@ -1,5 +1,13 @@
-[workspace]
-members = [
-  "client",
-  "daemon",
-]
+[package]
+edition = "2021"
+name = "phylactery"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "phylactery"
+
+[dependencies]
+
+[build-dependencies]
