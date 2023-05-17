@@ -4,8 +4,6 @@ A FIFO persisted collection, which can grow as needed and should require little 
 ## Design
 At a high-level there are two layers to the queue implementation. First is a [mmap](https://man7.org/linux/man-pages/man2/mmap.2.html)'d buffer for reads and writes to offer performance at the cost of copying data when it comes to permanent data residence and potential flash memory degradation (TODO: confirm this is true). Second is a series of files that are the permanent locations of data.
 
-The client side will use an [IPC](https://en.wikipedia.org/wiki/Inter-process_communication) to communicate with the IO execution side (daemon). The [daemon](./daemon.md) will be responsible for managing its own copy of the mmaps and doing actual IO operations to disk. The client may send requests to the daemon to perform IO and thus be able to treat all IO as asynchronous.
-
 The file layout on disk will look something like this:
 ```
 [File 1]->[File 2]->[File 3]->[File 4]->[File 5]->[File 6]->[File 7]->[File 8]->[File 9]->[File 10]

@@ -2,5 +2,4 @@
 
 - [Queue](queue.md)
 - [IO](io.md)
-- [Daemon](daemon.md)
 - [RingBuffer](ringbuffer.md)
