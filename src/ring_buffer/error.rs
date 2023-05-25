@@ -11,9 +11,6 @@ pub enum Error {
     #[error("buffer error: {0}")]
     BufferError(#[from] buffer::Error),
 
-    #[error("buffer full")]
-    BufferFull,
-
     #[error("buffer too small: {0} < {1}")]
     BufferTooSmall(u32, u32),
 
@@ -40,7 +37,4 @@ pub enum Error {
 
     #[error("unerlying io err: {0}")]
     IO(#[from] std::io::Error),
-
-    #[error("split write failed: {0} > {1}")]
-    SplitWriteFailed(u32, u32),
 }
