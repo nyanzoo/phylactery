@@ -9,5 +9,12 @@ version = "0.1.0"
 name = "phylactery"
 
 [dependencies]
+bincode = "1"
+crc32fast = "1"
+memmap2 = "0"
+serde = {version = "1", features = ["derive"]}
+thiserror = "1"
 
-[build-dependencies]
+[dev-dependencies]
+matches = "0"
+tempfile = "3"
