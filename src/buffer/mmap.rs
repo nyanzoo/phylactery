@@ -73,7 +73,6 @@ impl Buffer for MmapBuffer {
     }
 }
 
-
 impl AsRef<[u8]> for MmapBuffer {
     fn as_ref(&self) -> &[u8] {
         unsafe { &*self.0.get() }
