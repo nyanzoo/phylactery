@@ -17,14 +17,11 @@ pub enum Error {
     #[error("codec err: {0}")]
     Codec(#[from] crate::codec::Error),
 
-    #[error("metadata crc mismatch: {expected} != {actual}")]
-    MetadataCrcMismatch { expected: u32, actual: u32 },
-
-    #[error("data crc mismatch: {expected} != {actual}")]
-    DataCrcMismatch { expected: u32, actual: u32 },
-
     #[error("empty data")]
     EmptyData,
+
+    #[error("entry error: {0}")]
+    Entry(#[from] crate::entry::error::Error),
 
     #[error("entry too big: {0} > {1}")]
     EntryTooBig(u64, u64),

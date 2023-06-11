@@ -1,8 +1,14 @@
 use std::mem::size_of;
 
-use crate::codec::{self, Decode, Encode};
+use crate::{
+    buffer::Buffer,
+    codec::{self, Decode, Encode},
+};
 
-use super::error::Error;
+pub mod v1;
+
+pub mod error;
+pub use error::Error;
 
 /// The version for encoding and decoding metadata and data.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -11,10 +17,12 @@ pub enum Version {
     V1,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
 #[repr(C)]
 pub enum Metadata {
-    Version1(version1::Metadata),
+    Version1(v1::Metadata),
 }
 
 impl Metadata {
@@ -26,15 +34,13 @@ impl Metadata {
         data_size: u32,
     ) -> Self {
         match version {
-            Version::V1 => Self::Version1(version1::Metadata::new(
-                entry, read_ptr, write_ptr, data_size,
-            )),
+            Version::V1 => Self::Version1(v1::Metadata::new(entry, read_ptr, write_ptr, data_size)),
         }
     }
 
     pub const fn size(version: Version) -> u32 {
         match version {
-            Version::V1 => size_of::<Version>() as u32 + version1::Metadata::size(),
+            Version::V1 => size_of::<Version>() as u32 + v1::Metadata::size(),
         }
     }
 
@@ -58,7 +64,7 @@ impl Metadata {
 
     pub fn calculate_data_size(version: Version, size: u32) -> u32 {
         let inner = match version {
-            Version::V1 => version1::Metadata::calculate_data_size(size),
+            Version::V1 => v1::Metadata::calculate_data_size(size),
         };
         inner + size_of::<Version>() as u32
     }
@@ -110,13 +116,13 @@ impl Encode for Metadata {
 #[repr(C)]
 pub enum Data<'a> {
     #[serde(borrow)]
-    Version1(version1::Data<'a>),
+    Version1(v1::Data<'a>),
 }
 
 impl<'a> Data<'a> {
     pub fn new(version: Version, data: &'a [u8]) -> Self {
         match version {
-            Version::V1 => Self::Version1(version1::Data::new(data)),
+            Version::V1 => Self::Version1(v1::Data::new(data)),
         }
     }
 
@@ -158,121 +164,68 @@ impl Encode for Data<'_> {
     }
 }
 
-mod version1 {
-    use std::mem::size_of;
+pub fn crc_check(expected: u32, data: &[u8]) -> Result<(), Error> {
+    let mut actual = crc32fast::Hasher::new();
+    actual.update(data);
+    let actual = actual.finalize();
+    if expected != actual {
+        Err(Error::DataCrcMismatch { expected, actual })
+    } else {
+        Ok(())
+    }
+}
 
-    use crate::ring_buffer::Error;
+pub fn last_metadata<B>(buffer: &B, version: Version) -> Result<Option<Metadata>, Error>
+where
+    B: Buffer,
+{
+    let mut off = 0;
+    let has_data = loop {
+        let mut header = [0u8; 4];
+        buffer.read_at(&mut header, off)?;
+        // TODO: should be little endian?
+        // D5EED5BA
+        match header {
+            // [0x0, 0x0, 0x0, 0x0] => break false,
+            [0xd5, 0xee, 0xd5, 0xba] => break true,
+            [_, 0xd5, 0xee, 0xd5] => off += 1,
+            [_, _, 0xd5, 0xee] => off += 2,
+            [_, _, _, 0xd5] => off += 3,
+            _ => off += 4,
+        }
 
-    #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-    #[repr(C)]
-    pub struct Metadata {
-        // The mask for the entry. (not used in crc)
-        pub mask: u32,
-        // This is used for scanning efficiently and finding most recent entry.
-        pub entry: u64,
-        // The read ptr when written.
-        pub read_ptr: u64,
-        // The write ptr when written.
-        pub write_ptr: u64,
-        // The size of the data.
-        pub size: u32,
-        // The crc of all the metadata.
-        pub crc: u32,
+        if off as u64 >= buffer.capacity() {
+            break false;
+        }
+    };
+
+    if has_data {
+        // rollback 4 bytes to get start of entry.
+        off -= 4;
+
+        let mut metas = vec![];
+        while (off as u64 + Metadata::size(version) as u64) < buffer.capacity() {
+            // read the metadata.
+            let metadata: Metadata = buffer.decode_at(off, Metadata::size(version) as usize)?;
+
+            metas.push(metadata);
+
+            // increment the offset by the size of the metadata.
+            off += Metadata::size(version) as usize;
+            // increment the offset by the size of the data.
+            off += metadata.data_size() as usize;
+        }
+
+        // The last entry is the one with the highest entry value.
+        metas.sort();
+        let metadata = metas.last().expect("ptrs should not be empty");
+        return Ok(Some(*metadata));
+
+        // what happens right now is that if we write to disk, and then read from disk, we cannot know
+        // what the last read entry was... is that okay? Let's think about this carefully.
     }
 
-    impl Metadata {
-        pub fn new(entry: u64, read_ptr: u64, write_ptr: u64, size: u32) -> Self {
-            let crc = Self::generate_crc(entry, read_ptr, write_ptr, size);
-            Self {
-                mask: 0xbad5eed5,
-                entry,
-                read_ptr,
-                write_ptr,
-                size,
-                crc,
-            }
-        }
-
-        pub fn calculate_data_size(size: u32) -> u32 {
-            // 8 for len of data + 4 for crc + data size
-            8 + size + 4
-        }
-
-        pub const fn size() -> u32 {
-            size_of::<Self>() as u32
-        }
-
-        pub fn verify(&self) -> Result<(), Error> {
-            let crc = Self::generate_crc(self.entry, self.read_ptr, self.write_ptr, self.size);
-            if crc != self.crc {
-                return Err(Error::MetadataCrcMismatch {
-                    expected: self.crc,
-                    actual: crc,
-                });
-            }
-            Ok(())
-        }
-
-        pub const fn mask(&self) -> u32 {
-            self.mask
-        }
-
-        fn generate_crc(entry: u64, read_ptr: u64, write_ptr: u64, size: u32) -> u32 {
-            let mut crc = crc32fast::Hasher::new();
-            crc.update(&entry.to_be_bytes());
-            crc.update(&read_ptr.to_be_bytes());
-            crc.update(&write_ptr.to_be_bytes());
-            crc.update(&size.to_be_bytes());
-            crc.finalize()
-        }
-    }
-
-    #[derive(Copy, Clone, Debug, Eq, serde::Deserialize, serde::Serialize)]
-    #[repr(C)]
-    pub struct Data<'a> {
-        // The data of the entry.
-        pub data: &'a [u8],
-        // The crc of the data.
-        pub crc: u32,
-    }
-
-    impl<'a> PartialEq for Data<'a> {
-        fn eq(&self, other: &Self) -> bool {
-            self.crc == other.crc
-        }
-    }
-
-    impl<'a> Data<'a> {
-        pub fn new(data: &'a [u8]) -> Self {
-            let crc = Self::generate_crc(data);
-            Self { data, crc }
-        }
-
-        pub fn copy_into(self, buf: &mut [u8]) {
-            buf[..self.data.len()].copy_from_slice(self.data);
-        }
-
-        pub const fn size(&self) -> u32 {
-            8 + self.data.len() as u32 + size_of::<u32>() as u32
-        }
-
-        pub fn verify(&self) -> Result<(), Error> {
-            let crc = Self::generate_crc(self.data);
-            if crc != self.crc {
-                return Err(Error::DataCrcMismatch {
-                    expected: self.crc,
-                    actual: crc,
-                });
-            }
-            Ok(())
-        }
-
-        fn generate_crc(data: &[u8]) -> u32 {
-            let mut crc = crc32fast::Hasher::new();
-            crc.update(data);
-            crc.finalize()
-        }
-    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -280,7 +233,7 @@ mod tests {
 
     use crate::codec::{Decode, Encode};
 
-    use super::{version1, Data, Metadata, Version};
+    use super::{v1, Data, Metadata, Version};
 
     #[test]
     fn test_metadata_size() {
@@ -292,7 +245,7 @@ mod tests {
     #[test]
     fn test_data_write() {
         // create a Data instance to write
-        let data = Data::Version1(version1::Data {
+        let data = Data::Version1(v1::Data {
             data: "kittens".as_bytes(),
             crc: 1234,
         });

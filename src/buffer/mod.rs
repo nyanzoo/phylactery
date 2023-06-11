@@ -9,7 +9,7 @@ pub use mem::InMemBuffer;
 mod mmap;
 pub use mmap::MmapBuffer;
 
-pub trait Buffer {
+pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// # Description
     /// Given an offset and length, decode a value of type `T`.
     ///
@@ -84,53 +84,4 @@ pub trait Buffer {
     /// # Return Value
     /// The capacity of the queue.
     fn capacity(&self) -> u64;
-}
-
-pub struct AlignedBuffer<B, const ALIGNMENT: u64>(B)
-where
-    B: Buffer;
-
-impl<B, const ALIGNMENT: u64> AlignedBuffer<B, ALIGNMENT>
-where
-    B: Buffer,
-{
-    pub fn new(buffer: B) -> Result<Self, error::Error> {
-        if buffer.capacity() < ALIGNMENT || buffer.capacity() % ALIGNMENT != 0 {
-            return Err(error::Error::Alignment(buffer.capacity(), ALIGNMENT));
-        }
-        Ok(Self(buffer))
-    }
-}
-
-impl<B, const ALIGNMENT: u64> Buffer for AlignedBuffer<B, ALIGNMENT>
-where
-    B: Buffer,
-{
-    fn decode_at<'a, T>(&'a self, off: usize, len: usize) -> Result<T, Error>
-    where
-        T: Decode<'a>,
-    {
-        self.0.decode_at(off, len)
-    }
-
-    fn encode_at<T>(&self, off: usize, len: usize, data: &T) -> Result<(), Error>
-    where
-        T: Encode,
-    {
-        self.0.encode_at(off, len, data)
-    }
-
-    fn read_at(&self, buf: &mut [u8], off: usize) -> Result<u64, Error> {
-        let res = self.0.read_at(buf, off)?;
-        Ok(res)
-    }
-
-    fn write_at(&self, buf: &[u8], off: usize) -> Result<u64, Error> {
-        let res = self.0.write_at(buf, off)?;
-        Ok(res)
-    }
-
-    fn capacity(&self) -> u64 {
-        self.0.capacity()
-    }
 }

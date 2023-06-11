@@ -28,7 +28,6 @@ impl Buffer for InMemBuffer {
         T: Decode<'a>,
     {
         let shared = unsafe { &*self.0.get() };
-        println!("shared: {:?}", &shared[off..(off + len)]);
         let res = T::decode(&shared[off..(off + len)])?;
         Ok(res)
     }
@@ -70,5 +69,17 @@ impl Buffer for InMemBuffer {
 
     fn capacity(&self) -> u64 {
         unsafe { &*self.0.get() }.len() as u64
+    }
+}
+
+impl AsRef<[u8]> for InMemBuffer {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { &*self.0.get() }
+    }
+}
+
+impl AsMut<[u8]> for InMemBuffer {
+    fn as_mut(&mut self) -> &mut [u8] {
+        unsafe { &mut *self.0.get() }
     }
 }
