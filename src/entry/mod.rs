@@ -149,6 +149,12 @@ impl<'a> Data<'a> {
             Self::Version1(data) => data.verify(),
         }
     }
+
+    pub fn crc(&self) -> u32 {
+        match self {
+            Self::Version1(data) => data.crc,
+        }
+    }
 }
 
 impl<'a> Decode<'a> for Data<'a> {

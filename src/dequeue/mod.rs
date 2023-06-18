@@ -10,7 +10,11 @@ use std::{
     },
 };
 
-use crate::{buffer::InMemBuffer, entry::Version};
+use crate::{
+    buffer::InMemBuffer,
+    codec::Decode,
+    entry::{Data, Metadata, Version},
+};
 
 mod error;
 pub use error::Error;
@@ -100,9 +104,14 @@ pub enum Pop {
     WaitForFlush,
 }
 
-// Good idea: treat the file not found err for read as a special case for yielding for writes.
-// Also add a flush method to be called at end of writes.
-pub struct Dequeue<S>
+#[derive(Debug)]
+pub struct Push {
+    pub file: u64,
+    pub offset: u64,
+    pub length: u64,
+}
+
+struct Inner<S>
 where
     S: AsRef<str>,
 {
@@ -113,7 +122,7 @@ where
     version: Version,
 }
 
-impl<S> Drop for Dequeue<S>
+impl<S> Drop for Inner<S>
 where
     S: AsRef<str>,
 {
@@ -141,7 +150,7 @@ where
 // write to disk. if we hit the disk limit, we should error.
 // pop needs to read from disk and fall back to read from next node if node is empty.
 // this is because we could be writing in mem and not have written to disk yet.
-impl<S> Dequeue<S>
+impl<S> Inner<S>
 where
     S: AsRef<str>,
 {
@@ -205,7 +214,7 @@ where
         }
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<(), Error> {
+    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
@@ -213,7 +222,7 @@ where
 
         let write = unsafe { write.as_ref() };
         match write.push(buf) {
-            Ok(_) => Ok(()),
+            Ok(data) => Ok(data),
             Err(Error::NodeFull) => {
                 let mut next = self.backing_generator.next_write()?;
                 next.write_all((*write).as_ref())?;
@@ -221,7 +230,7 @@ where
 
                 let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
 
-                node.push(buf)?;
+                let data = node.push(buf)?;
 
                 let node = Box::into_raw(Box::new(node));
 
@@ -232,7 +241,7 @@ where
                     unsafe { Box::from_raw(write_ptr) };
                 }
 
-                Ok(())
+                Ok(data)
             }
             Err(e) => Err(e),
         }
@@ -257,6 +266,31 @@ where
         Ok(())
     }
 
+    pub(crate) fn get<'a>(
+        &self,
+        file: u64,
+        offset: u64,
+        buf: &'a mut [u8],
+        version: Version,
+    ) -> Result<Data<'a>, Error> {
+        let mut meta_buf = vec![0; Metadata::size(version) as usize];
+
+        let file = OpenOptions::new().read(true).open(format!(
+            "{}/{}.bin",
+            self.backing_generator.dir.as_ref(),
+            file
+        ))?;
+        file.read_at(&mut meta_buf, offset)?;
+
+        let meta = Metadata::decode(&meta_buf)?;
+        meta.verify()?;
+
+        file.read_at(buf, offset + Metadata::size(version) as u64)?;
+        let data = Data::decode(buf)?;
+
+        Ok(data)
+    }
+
     fn next_read_ptr(&self) -> Result<*mut DequeueNode<InMemBuffer>, Error> {
         // We have to try to read from disk.
         let mut next = self.backing_generator.next_read()?;
@@ -269,62 +303,97 @@ where
     }
 }
 
-pub struct DequeuePusher<S>
+// Good idea: treat the file not found err for read as a special case for yielding for writes.
+// Also add a flush method to be called at end of writes.
+pub struct Dequeue<S>(Arc<Inner<S>>)
+where
+    S: AsRef<str>;
+
+impl<S> Clone for Dequeue<S>
 where
     S: AsRef<str>,
 {
-    dequeue: Arc<Dequeue<S>>,
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
 }
 
-impl<S> DequeuePusher<S>
+impl<S> Dequeue<S>
 where
     S: AsRef<str>,
 {
-    pub fn new(dequeue: Arc<Dequeue<S>>) -> Self {
-        Self { dequeue }
+    pub fn new(dir: S, node_size: u64, version: Version) -> Result<Self, Error> {
+        Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<(), Error> {
-        self.dequeue.push(buf)
+    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+        self.0.push(buf)
     }
 
     pub fn flush(&self) -> Result<(), Error> {
-        self.dequeue.flush()
-    }
-}
-
-pub struct DequeuePopper<S>
-where
-    S: AsRef<str>,
-{
-    dequeue: Arc<Dequeue<S>>,
-}
-
-impl<S> DequeuePopper<S>
-where
-    S: AsRef<str>,
-{
-    pub fn new(dequeue: Arc<Dequeue<S>>) -> Self {
-        Self { dequeue }
+        self.0.flush()
     }
 
     pub fn pop(&self, buf: &mut [u8]) -> Result<Pop, Error> {
-        self.dequeue.pop(buf)
+        self.0.pop(buf)
+    }
+
+    pub(crate) fn get<'a>(
+        &self,
+        file: u64,
+        offset: u64,
+        buf: &'a mut [u8],
+    ) -> Result<Data<'a>, Error> {
+        self.0.get(file, offset, buf, self.0.version)
     }
 }
 
-pub fn dequeue<S>(
-    dir: S,
-    node_size: u64,
-    version: Version,
-) -> Result<(DequeuePusher<S>, DequeuePopper<S>), Error>
+pub struct Pusher<S>(Dequeue<S>)
+where
+    S: AsRef<str>;
+
+impl<S> Pusher<S>
 where
     S: AsRef<str>,
 {
-    let dequeue = Arc::new(Dequeue::new(dir, node_size, version)?);
+    pub fn new(dequeue: Dequeue<S>) -> Self {
+        Self(dequeue)
+    }
 
-    let pusher = DequeuePusher::new(dequeue.clone());
-    let popper = DequeuePopper::new(dequeue);
+    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+        self.0.push(buf)
+    }
+
+    pub fn flush(&self) -> Result<(), Error> {
+        self.0.flush()
+    }
+}
+
+pub struct Popper<S>(Dequeue<S>)
+where
+    S: AsRef<str>;
+
+impl<S> Popper<S>
+where
+    S: AsRef<str>,
+{
+    pub fn new(dequeue: Dequeue<S>) -> Self {
+        Self(dequeue)
+    }
+
+    pub fn pop(&self, buf: &mut [u8]) -> Result<Pop, Error> {
+        self.0.pop(buf)
+    }
+}
+
+pub fn dequeue<S>(dir: S, node_size: u64, version: Version) -> Result<(Pusher<S>, Popper<S>), Error>
+where
+    S: AsRef<str>,
+{
+    let dequeue = Dequeue::new(dir, node_size, version)?;
+
+    let pusher = Pusher::new(dequeue.clone());
+    let popper = Popper::new(dequeue);
 
     Ok((pusher, popper))
 }

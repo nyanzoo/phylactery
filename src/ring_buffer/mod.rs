@@ -9,9 +9,8 @@ use crate::{
     entry::{crc_check, last_metadata, Data, Metadata, Version},
 };
 
-use self::error::Error;
-
 pub mod error;
+pub use error::Error;
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
 where
@@ -36,12 +35,20 @@ where
         Ok(Self(Arc::new(Inner::new(buffer, version)?)))
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<(), Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         self.0.push(buf)
     }
 
     pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
         self.0.pop(buf)
+    }
+
+    pub(crate) fn get(&self, off: u64, buf: &mut [u8]) -> Result<(), Error> {
+        self.0.get(off, buf)
+    }
+
+    pub(crate) fn update(&self, off: u64, update_fn: impl FnOnce(&mut [u8])) -> Result<(), Error> {
+        self.0.update(off, update_fn)
     }
 
     #[cfg(test)]
@@ -120,7 +127,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push(&self, buf: &[u8]) -> Result<(), Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -155,6 +162,9 @@ where
             write_ptr = 0;
             has_wrapped = true;
         }
+
+        // This is the final write pointer location for the data we are writing into buffer.
+        let location = write_ptr;
 
         // If the entry is too big to fit in the remaining buffer, we can't write.
         if has_wrapped
@@ -218,7 +228,7 @@ where
         self.entry.store(entry, Ordering::Release);
         self.has_data.store(true, Ordering::Release);
 
-        Ok(())
+        Ok(location)
     }
 
     // TODO(nyanzebra): This could ignore version and try all of them.
@@ -339,6 +349,103 @@ where
 
         Ok(metadata.real_data_size() as usize)
     }
+
+    pub(crate) fn get(&self, off: u64, buf: &mut [u8]) -> Result<(), Error> {
+        let metadata = self
+            .buffer
+            .decode_at::<Metadata>(off as usize, Metadata::size(self.version) as usize)?;
+
+        // If the metadata CRC does not match, we can't read.
+        metadata.verify()?;
+
+        // If the data buffer is too small to hold the data, we can't read.
+        if buf.len() < metadata.real_data_size() as usize {
+            return Err(Error::BufferTooSmall(
+                buf.len() as u32,
+                metadata.real_data_size(),
+            ));
+        }
+
+        let off = off + Metadata::size(self.version) as u64;
+        let data: Data<'_> = self
+            .buffer
+            .decode_at(off as usize, metadata.data_size() as usize)?;
+        data.verify()?;
+        data.copy_into(buf);
+
+        Ok(())
+    }
+
+    // NOTE: this is only for KV store and the new data must be same size as original content!
+    pub(crate) fn update(&self, off: u64, update_fn: impl FnOnce(&mut [u8])) -> Result<(), Error> {
+        let metadata = self
+            .buffer
+            .decode_at::<Metadata>(off as usize, Metadata::size(self.version) as usize)?;
+
+        // If the metadata CRC does not match, we can't read.
+        metadata.verify()?;
+
+        let off = off + Metadata::size(self.version) as u64;
+        let mut data: Data<'_> = self
+            .buffer
+            .decode_at(off as usize, metadata.data_size() as usize)?;
+        data.verify()?;
+
+        match &mut data {
+            Data::Version1(data) => update_fn(&mut data.data),
+        }
+
+        self.buffer
+            .encode_at(off as usize, metadata.data_size() as usize, &data)?;
+
+        Ok(())
+    }
+}
+
+pub struct Pusher<B>(RingBuffer<B>)
+where
+    B: Buffer;
+
+impl<B> Pusher<B>
+where
+    B: Buffer,
+{
+    pub fn new(buffer: RingBuffer<B>) -> Self {
+        Self(buffer)
+    }
+
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+        self.0.push(buf)
+    }
+}
+
+pub struct Popper<B>(RingBuffer<B>)
+where
+    B: Buffer;
+
+impl<B> Popper<B>
+where
+    B: Buffer,
+{
+    pub fn new(dequeue: RingBuffer<B>) -> Self {
+        Self(dequeue)
+    }
+
+    pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.0.pop(buf)
+    }
+}
+
+pub fn ring_buffer<B>(buffer: B, version: Version) -> Result<(Pusher<B>, Popper<B>), Error>
+where
+    B: Buffer,
+{
+    let buffer = RingBuffer::new(buffer, version)?;
+
+    let pusher = Pusher::new(buffer.clone());
+    let popper = Popper::new(buffer);
+
+    Ok((pusher, popper))
 }
 
 #[cfg(test)]
