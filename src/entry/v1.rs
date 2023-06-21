@@ -78,7 +78,7 @@ impl Metadata {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, serde::Deserialize, serde::Serialize)]
 #[repr(C)]
 pub struct Data<'a> {
     // The data of the entry.
@@ -95,7 +95,7 @@ impl<'a> PartialEq for Data<'a> {
 
 impl<'a> Data<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        let crc = Self::generate_crc(data);
+        let crc = generate_crc(data);
         Self { data, crc }
     }
 
@@ -108,7 +108,7 @@ impl<'a> Data<'a> {
     }
 
     pub fn verify(&self) -> Result<(), Error> {
-        let crc = Self::generate_crc(self.data);
+        let crc = generate_crc(self.data);
         if crc != self.crc {
             return Err(Error::DataCrcMismatch {
                 expected: self.crc,
@@ -118,11 +118,69 @@ impl<'a> Data<'a> {
         Ok(())
     }
 
-    fn generate_crc(data: &[u8]) -> u32 {
-        let mut crc = crc32fast::Hasher::new();
-        crc.update(data);
-        crc.finalize()
+    // Might need to come up with different idea here, as it might not work with compiler.
+    // Though we do need a way to modify in-place.
+    #[allow(mutable_transmutes)]
+    pub fn as_mut(self) -> DataMut<'a> {
+        DataMut {
+            data: unsafe { std::mem::transmute(self.data) },
+            crc: self.crc,
+        }
     }
+}
+
+#[derive(Debug, Eq)]
+#[repr(C)]
+pub struct DataMut<'a> {
+    // The data of the entry.
+    pub data: &'a mut [u8],
+    // The crc of the data.
+    pub crc: u32,
+}
+
+impl<'a> PartialEq for DataMut<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.crc == other.crc
+    }
+}
+
+impl<'a> DataMut<'a> {
+    pub fn copy_into(self, buf: &mut [u8]) {
+        buf[..self.data.len()].copy_from_slice(self.data);
+    }
+
+    pub const fn size(&self) -> u32 {
+        8 + self.data.len() as u32 + size_of::<u32>() as u32
+    }
+
+    pub fn verify(&self) -> Result<(), Error> {
+        let crc = generate_crc(self.data);
+        if crc != self.crc {
+            return Err(Error::DataCrcMismatch {
+                expected: self.crc,
+                actual: crc,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn update(&mut self, update_fn: impl FnOnce(&mut [u8])) {
+        update_fn(self.data);
+        self.crc = generate_crc(self.data);
+    }
+
+    pub fn as_ref(self) -> Data<'a> {
+        Data {
+            data: unsafe { std::mem::transmute(self.data) },
+            crc: self.crc,
+        }
+    }
+}
+
+fn generate_crc(data: &[u8]) -> u32 {
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(data);
+    crc.finalize()
 }
 
 #[cfg(test)]

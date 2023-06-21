@@ -1,5 +1,5 @@
 use std::{
-    fs::{create_dir_all, File, OpenOptions},
+    fs::{create_dir_all, OpenOptions},
     io::{Read, Write},
     os::unix::prelude::FileExt,
     path::Path,
@@ -22,6 +22,11 @@ pub use error::Error;
 use self::node::DequeueNode;
 
 mod node;
+
+pub(crate) struct File {
+    file: std::fs::File,
+    index: u64,
+}
 
 pub struct BackingDequeueNodeGenerator<S>
 where
@@ -62,7 +67,7 @@ where
         })
     }
 
-    pub fn next_read(&self) -> Result<File, Error> {
+    pub(crate) fn next_read(&self) -> Result<File, Error> {
         let index = self.read_index.load(Ordering::Acquire);
         let paths = format!("{}/{}.bin", self.dir.as_ref(), index);
         let path = Path::new(&paths);
@@ -71,18 +76,22 @@ where
 
             self.read_index.store(index + 1, Ordering::Release);
 
-            Ok(file)
+            Ok(File { file, index })
         } else {
             Err(Error::FileDoesNotExist(paths))
         }
     }
 
-    pub fn next_write(&self) -> Result<File, Error> {
+    pub fn write_idx(&self) -> u64 {
+        self.write_index.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn next_write(&self) -> Result<File, Error> {
         let index = self.write_index.fetch_add(1, Ordering::AcqRel);
         let path = format!("{}/{}.bin", self.dir.as_ref(), index);
         let file = OpenOptions::new().append(true).create(true).open(path)?;
 
-        Ok(file)
+        Ok(File { file, index })
     }
 
     pub fn init_write(&self, buffer: &mut InMemBuffer) -> Result<(), Error> {
@@ -108,7 +117,7 @@ pub enum Pop {
 pub struct Push {
     pub file: u64,
     pub offset: u64,
-    pub length: u64,
+    pub crc: u32,
 }
 
 struct Inner<S>
@@ -214,7 +223,7 @@ where
         }
     }
 
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
@@ -222,15 +231,22 @@ where
 
         let write = unsafe { write.as_ref() };
         match write.push(buf) {
-            Ok(data) => Ok(data),
+            Ok(node::Push { offset, crc }) => Ok(Push {
+                file: self.backing_generator.write_idx(),
+                offset,
+                crc,
+            }),
             Err(Error::NodeFull) => {
-                let mut next = self.backing_generator.next_write()?;
+                let File {
+                    file: mut next,
+                    index,
+                } = self.backing_generator.next_write()?;
                 next.write_all((*write).as_ref())?;
                 next.flush()?;
 
                 let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
 
-                let data = node.push(buf)?;
+                let node::Push { offset, crc } = node.push(buf)?;
 
                 let node = Box::into_raw(Box::new(node));
 
@@ -241,7 +257,11 @@ where
                     unsafe { Box::from_raw(write_ptr) };
                 }
 
-                Ok(data)
+                Ok(Push {
+                    file: index,
+                    offset,
+                    crc,
+                })
             }
             Err(e) => Err(e),
         }
@@ -254,7 +274,10 @@ where
 
         let write = unsafe { write.as_ref() };
 
-        let mut next = self.backing_generator.next_write()?;
+        let File {
+            file: mut next,
+            index: _,
+        } = self.backing_generator.next_write()?;
         next.write_all((*write).as_ref())?;
         next.flush()?;
 
@@ -293,7 +316,10 @@ where
 
     fn next_read_ptr(&self) -> Result<*mut DequeueNode<InMemBuffer>, Error> {
         // We have to try to read from disk.
-        let mut next = self.backing_generator.next_read()?;
+        let File {
+            file: mut next,
+            index: _,
+        } = self.backing_generator.next_read()?;
         let mut buffer = InMemBuffer::new(self.node_size);
 
         _ = next.read(buffer.as_mut())?;
@@ -326,7 +352,7 @@ where
         Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
     }
 
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         self.0.push(buf)
     }
 
@@ -360,7 +386,7 @@ where
         Self(dequeue)
     }
 
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         self.0.push(buf)
     }
 

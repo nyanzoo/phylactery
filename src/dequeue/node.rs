@@ -37,6 +37,12 @@ where
     }
 }
 
+#[derive(Debug)]
+pub struct Push {
+    pub offset: u64,
+    pub crc: u32,
+}
+
 // SPSC queue
 impl<B> DequeueNode<B>
 where
@@ -123,7 +129,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -155,6 +161,9 @@ where
             return Err(Error::NodeFull);
         }
 
+        // We need the original ptr for returning where the data is stored.
+        let offset = write_ptr;
+
         // write the metadata.
         self.buffer.encode_at(
             write_ptr as usize,
@@ -175,7 +184,10 @@ where
         self.entry.store(entry, Ordering::Release);
         self.has_data.store(true, Ordering::Release);
 
-        Ok(data)
+        Ok(Push {
+            offset,
+            crc: data.crc(),
+        })
     }
 }
 
