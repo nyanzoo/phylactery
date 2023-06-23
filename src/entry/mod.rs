@@ -132,6 +132,12 @@ impl<'a> Data<'a> {
         }
     }
 
+    pub fn into_inner(self) -> &'a [u8] {
+        match self {
+            Self::Version1(data) => data.data,
+        }
+    }
+
     pub const fn size(&self) -> u32 {
         match self {
             Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
