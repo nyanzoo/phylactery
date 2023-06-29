@@ -55,8 +55,8 @@ where
 mod test {
     use crate::{
         buffer::MmapBuffer,
-        codec::Decode,
-        entry::{Data, Version},
+        entry::Version,
+        kv_store::{Graveyard, Lookup},
         ring_buffer::ring_buffer,
     };
 
@@ -84,12 +84,58 @@ mod test {
         store
             .insert(b"pets", "cats".as_bytes())
             .expect("insert failed");
-        let mut buf = vec![0; 64];
-        store.get(b"pets", &mut buf).expect("key not found");
 
-        let actual = Data::decode(&buf)
-            .expect("failed to deserialize")
-            .into_inner();
+        let mut buf = vec![0; 64];
+        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        else {
+            panic!("key not found");
+        };
+
+        let actual = data.into_inner();
         assert_eq!(actual, b"cats");
+    }
+
+    #[test]
+    fn test_graveyard() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.into_path();
+
+        let mmap_path = path.join("mmap.bin");
+        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+
+        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+
+        let meta_path = path.join("meta.bin");
+        let meta_path = meta_path.to_str().unwrap();
+
+        let data_path = path.join("data.bin");
+        let data_path = data_path.to_str().unwrap();
+
+        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
+            .expect("KVStore::new failed");
+
+        _ = std::thread::spawn(move || {
+            let graveyard = Graveyard::new(path.join("graveyard.bin"), popper);
+            graveyard.bury(1);
+        });
+
+        store
+            .insert(b"pets", "cats".as_bytes())
+            .expect("insert failed");
+        store
+            .insert(b"pets", "dogs".as_bytes())
+            .expect("insert failed");
+
+        let mut buf = vec![0; 64];
+        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        else {
+            panic!("key not found");
+        };
+
+        let actual = data.into_inner();
+        assert_eq!(actual, b"dogs");
+
+        store.delete(b"pets").expect("delete failed");
+        
     }
 }
