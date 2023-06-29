@@ -14,6 +14,7 @@ pub use graveyard::Graveyard;
 mod error;
 pub use error::Error;
 
+#[derive(Debug, Eq, PartialEq)]
 pub enum Lookup<'a> {
     Absent,
     Found(Data<'a>),
@@ -26,8 +27,6 @@ struct KeyLookup {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 pub enum MetaState {
-    // Ready to accept data (never actively set)
-    Ready,
     // We need to compact and cannot accept new metadata in this slot
     Compacting,
     // Has live data associated with it
@@ -125,15 +124,47 @@ where
                 metadata.state = MetaState::Compacting;
                 metadata.encode(data).expect("metadata encode failed");
             })?;
+            self.pusher.push(&buf)?;
         }
 
         Ok(())
     }
 
-    // Need to think through how to handle the possible state of insert to backing queue
-    // was successful, but then we crash, and the meta file is not updated.
-    // We need to be able to delete that data.
-    pub fn get<'a, 'b>(&'a self, key: &[u8], buf: &'b mut [u8]) -> Result<Lookup, Error>
+    /// # Description
+    /// Get the value associated with the key.
+    ///
+    /// ## Details
+    /// ### Lookup
+    /// We will first lookup the key in our key metadata layer. If the key
+    /// is not found, we will return a `Lookup::Absent`. If the key is found, we will
+    /// then lookup the metadata in the meta file. If the metadata is not found,
+    /// we will error. If the metadata is found, we will then lookup the data
+    /// in the data file. If the data is not found, we will error. If the data
+    /// is found, we will verify the data and return a `Lookup::Found`.
+    ///
+    /// ### Tombstone
+    /// It is possible that we crashed after we added data to the dequeue, but
+    /// before we updated the meta file. In this case, we will have a tombstone
+    /// of `MetaState::Compacting` in the meta file (default value) and can
+    /// remove the key from the lookup. GC will happen in [`Graveyard`].
+    ///
+    /// # Example
+    /// ```rust, ignore
+    /// let mut buf = vec![0; 1024]; // for reading in value as a [`Data`].
+    /// store.get(b"key", &mut buf)?;
+    /// ```
+    ///
+    /// # Arguments
+    /// - `key` - The key to lookup.
+    /// - `buf` - The buffer to read the value, as [`Data`] into.
+    ///
+    /// # Returns
+    /// - `Ok(Lookup::Found)` - The key was found and the value was read into `buf`.
+    /// - `Ok(Lookup::Absent)` - The key was not found.
+    ///
+    /// # Errors
+    /// See [`Error`].
+    pub fn get<'a, 'b>(&'a mut self, key: &[u8], buf: &'b mut [u8]) -> Result<Lookup, Error>
     where
         'b: 'a,
     {
@@ -150,8 +181,10 @@ where
 
             match state {
                 MetaState::Full => {}
-                MetaState::Compacting | MetaState::Ready => {
-                    return Err(Error::KeyNotFound(format!("{:?}", key)))
+                MetaState::Compacting => {
+                    // Remove bad key!
+                    self.lookup.remove(key);
+                    return Err(Error::KeyNotFound(format!("{:?}", key)));
                 }
             }
 
@@ -165,6 +198,33 @@ where
         }
     }
 
+    /// # Description
+    /// Insert a key/value pair into the store. If the key already exists, the
+    /// value will be overwritten.
+    ///
+    /// ## Details
+    /// ### Inserting a new key/value pair
+    /// When inserting a new key/value pair, we will first write the value
+    /// to our backing dequeue and get a file/offset pair. We will then
+    /// write the metadata to our meta file, which will include the crc,
+    /// file, offset, state (for GC) and key. We will then insert the key into our lookup
+    /// table, which will be the hash of the key to the offset in the meta file.
+    ///
+    /// ### Overwriting an existing key/value pair
+    /// Same as inserting a new key/value pair, except we will first tombstone
+    /// the old entry in the meta file.
+    ///
+    /// # Example
+    /// ```rust, ignore
+    /// store.insert(b"key", b"value");
+    /// ```
+    ///
+    /// # Arguments
+    /// - `key` - The key to insert.
+    /// - `value` - The value to insert.
+    ///
+    /// # Errors
+    /// See [`Error`] for more details.
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         // We need to tombstone old entry if it exists.
         if let Some(lookup) = self.lookup.get(key) {
@@ -209,8 +269,8 @@ where
 mod test {
     use crate::{
         buffer::MmapBuffer,
-        codec::Decode,
-        entry::{Data, Version},
+        entry::Version,
+        kv_store::{Graveyard, Lookup},
         ring_buffer::ring_buffer,
     };
 
@@ -238,12 +298,58 @@ mod test {
         store
             .insert(b"pets", "cats".as_bytes())
             .expect("insert failed");
-        let mut buf = vec![0; 64];
-        store.get(b"pets", &mut buf).expect("key not found");
 
-        let actual = Data::decode(&buf)
-            .expect("failed to deserialize")
-            .into_inner();
+        let mut buf = vec![0; 64];
+        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        else {
+            panic!("key not found");
+        };
+
+        let actual = data.into_inner();
         assert_eq!(actual, b"cats");
+    }
+
+    #[test]
+    fn test_graveyard() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.into_path();
+
+        let mmap_path = path.join("mmap.bin");
+        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+
+        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+
+        let meta_path = path.join("meta.bin");
+        let meta_path = meta_path.to_str().unwrap();
+
+        let data_path = path.join("data.bin");
+        let data_path = data_path.to_str().unwrap();
+
+        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
+            .expect("KVStore::new failed");
+
+        _ = std::thread::spawn(move || {
+            let graveyard = Graveyard::new(path.join("graveyard.bin"), popper);
+            graveyard.bury(1);
+        });
+
+        store
+            .insert(b"pets", "cats".as_bytes())
+            .expect("insert failed");
+        store
+            .insert(b"pets", "dogs".as_bytes())
+            .expect("insert failed");
+
+        let mut buf = vec![0; 64];
+        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        else {
+            panic!("key not found");
+        };
+
+        let actual = data.into_inner();
+        assert_eq!(actual, b"dogs");
+
+        store.delete(b"pets").expect("delete failed");
+        
     }
 }

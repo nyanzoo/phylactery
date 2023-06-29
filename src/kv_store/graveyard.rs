@@ -72,7 +72,8 @@ impl Graveyard {
                     let len = file.metadata().expect("no file metadata").len();
                     let mut in_buf = InMemBuffer::new(len);
 
-                    file.read_exact(in_buf.as_mut()).expect("failed to read file");
+                    file.read_exact(in_buf.as_mut())
+                        .expect("failed to read file");
 
                     let out_buf = Self::compact_buf(tomb, in_buf);
 
