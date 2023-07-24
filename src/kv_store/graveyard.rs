@@ -11,12 +11,14 @@ use crate::{
     ring_buffer,
 };
 
-#[derive(serde::Deserialize, serde::Serialize)]
-struct Tombstone {
-    dir: u64,
-    file: u64,
-    offset: u64,
-    len: u64,
+pub(crate) const TOMBSTONE_SIZE: usize = size_of::<Tombstone>();
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub(crate) struct Tombstone {
+    pub crc: u32,
+    pub file: u64,
+    pub offset: u64,
+    pub len: u64,
 }
 
 impl Encode for Tombstone {
@@ -55,6 +57,9 @@ impl Graveyard {
         Self { dir, popper }
     }
 
+    // The problem is we also need to update the metadata for the dequeue.
+    // We can't just delete the data, we need to update the metadata to say
+    // that the data is no longer there and somewhere else (if just moved).;p[''']
     pub fn bury(self, interval: u64) -> ! {
         let interval = Duration::from_secs(interval);
         loop {
@@ -63,10 +68,11 @@ impl Graveyard {
 
             for tomb in tombs {
                 let file = tomb[0].file;
-                let dir = tomb[0].dir;
-                let file = format!("{}/{}.bin", dir, file);
-                let out = self.dir.join(format!("{}/{}.new", dir, file));
+                let file = format!("{}.bin", file);
+                let out = self.dir.join(format!("{}.new", file));
                 let file = self.dir.join(file);
+
+                let mut has_data = false;
                 // If file doesn't exist, then we have already compacted it, or removed it.
                 if let Ok(mut file) = std::fs::File::open(file.clone()) {
                     let len = file.metadata().expect("no file metadata").len();
@@ -77,14 +83,21 @@ impl Graveyard {
 
                     let out_buf = Self::compact_buf(tomb, in_buf);
 
-                    let mut out =
-                        std::fs::File::create(out.clone()).expect("failed to create file");
+                    has_data = !out_buf.is_empty();
+                    has_data &= out_buf.iter().cloned().map(u64::from).sum::<u64>() != 0;
 
-                    out.write_all(&out_buf).expect("failed to write file");
+                    if has_data {
+                        let mut out =
+                            std::fs::File::create(out.clone()).expect("failed to create file");
+
+                        out.write_all(&out_buf).expect("failed to write file");
+                    }
                 }
 
                 std::fs::remove_file(file.clone()).expect("failed to remove file");
-                std::fs::rename(out, file).expect("failed to rename file");
+                if has_data {
+                    std::fs::rename(out, file.clone()).expect("failed to rename file");
+                }
             }
 
             std::thread::sleep(interval);
@@ -97,9 +110,9 @@ impl Graveyard {
         let mut nodes = vec![];
         let mut node = 0;
 
-        let mut buf = vec![0; 32];
+        let mut buf = vec![0; len];
         // If we crash and it happens to be that tombstones map to same spot as different data,
-        // then we will delete data we should keep.
+        // then we will delete data we should keep. Is this true still?
         while let Ok(bytes) = self.popper.pop(&mut buf) {
             assert!(bytes == len, "invalid tombstone length");
             let tomb = Tombstone::decode(&buf).expect("failed to decode tombstone");
@@ -112,7 +125,7 @@ impl Graveyard {
                 nodes[node].push(tomb);
             } else {
                 let last = nodes[node].last().expect("no tombstones in node");
-                if tomb.file == last.file && tomb.dir == last.dir {
+                if tomb.file == last.file {
                     nodes[node].push(tomb);
                 } else {
                     node += 1;
@@ -141,4 +154,12 @@ impl Graveyard {
 
         out_buf
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Graveyard, Tombstone};
+
+    #[test]
+    fn test_name() {}
 }

@@ -31,3 +31,17 @@ pub trait Encode {
     /// See [`error::Error`] for more details.
     fn encode(&self, buf: &mut [u8]) -> Result<(), Error>;
 }
+
+
+// Integers
+impl<'a> Decode<'a> for usize {
+    fn decode(buf: &'a [u8]) -> Result<Self, Error> {
+        bincode::deserialize(buf).map_err(Error::from)
+    }
+}
+
+impl Encode for usize {
+    fn encode(&self, buf: &mut [u8]) -> Result<(), Error> {
+        bincode::serialize_into(buf, self).map_err(Error::from)
+    }
+}

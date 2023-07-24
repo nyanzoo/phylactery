@@ -40,6 +40,7 @@ where
 #[derive(Debug)]
 pub struct Push {
     pub offset: u64,
+    pub len: u64,
     pub crc: u32,
 }
 
@@ -135,6 +136,7 @@ where
         }
 
         let mut write_ptr = self.write.load(Ordering::Acquire);
+        let orig_write_ptr = write_ptr;
         let read_ptr = self.read.load(Ordering::Acquire);
         let entry = self.entry.load(Ordering::Acquire) + 1;
 
@@ -180,12 +182,14 @@ where
         write_ptr += Metadata::calculate_data_size(self.version, buf.len() as u32) as u64;
 
         // update the write pointer.
+        let len = write_ptr - orig_write_ptr;
         self.write.store(write_ptr, Ordering::Release);
         self.entry.store(entry, Ordering::Release);
         self.has_data.store(true, Ordering::Release);
 
         Ok(Push {
             offset,
+            len,
             crc: data.crc(),
         })
     }

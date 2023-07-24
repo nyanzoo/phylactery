@@ -1,28 +1,34 @@
 use std::{collections::BTreeMap, mem::size_of, path::Path};
 
 use crate::{
+    alloc::{Entry, FixedSizeAllocator},
     buffer::MmapBuffer,
     codec::{self, Decode, Encode},
     dequeue::{Dequeue, Push},
     entry::{Data, Version},
-    ring_buffer::{self, RingBuffer},
+    ring_buffer::{self},
 };
 
 mod graveyard;
 pub use graveyard::Graveyard;
+use graveyard::{Tombstone, TOMBSTONE_SIZE};
 
 mod error;
 pub use error::Error;
+
+type Key = [u8; 32];
+
+pub fn key(key: &[u8]) -> Key {
+    let mut k = [0; 32];
+    let len = std::cmp::min(key.len(), 32);
+    k[..len].copy_from_slice(&key[..len]);
+    k
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Lookup<'a> {
     Absent,
     Found(Data<'a>),
-}
-
-// Lookup -> meta file location -> data file location -> data
-struct KeyLookup {
-    offset: u64,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -38,9 +44,21 @@ struct Metadata {
     crc: u32,
     file: u64,
     offset: u64,
-    key: Vec<u8>,
+    len: u64,
+    key: Key,
     // We set the tombstone and do not accept additional data until we have compacted.
     state: MetaState,
+}
+
+impl Into<Tombstone> for Metadata {
+    fn into(self) -> Tombstone {
+        Tombstone {
+            crc: self.crc,
+            file: self.file,
+            offset: self.offset,
+            len: self.len,
+        }
+    }
 }
 
 const METADATA_SIZE: usize = size_of::<Metadata>();
@@ -69,9 +87,9 @@ where
     S: AsRef<str>,
 {
     // store key metadata
-    lookup: BTreeMap<Vec<u8>, KeyLookup>,
+    lookup: BTreeMap<Key, Entry<MmapBuffer>>,
     // meta file
-    meta: RingBuffer<MmapBuffer>,
+    meta: FixedSizeAllocator<MmapBuffer, METADATA_SIZE>,
     // data files
     dequeue: Dequeue<S>,
     // graveyard pusher
@@ -92,16 +110,14 @@ where
         pusher: ring_buffer::Pusher<MmapBuffer>,
     ) -> Result<Self, Error> {
         let meta = MmapBuffer::new(meta_path, meta_size)?;
-        let meta = RingBuffer::new(meta, version)?;
+        let mut meta = FixedSizeAllocator::new(meta)?;
         let dequeue = Dequeue::new(data_path, node_size, version)?;
 
         let mut lookup = BTreeMap::new();
-        for pos in meta.iter() {
-            let mut buf = vec![0; METADATA_SIZE];
-            meta.get(pos, &mut buf)?;
-            let Metadata { offset, key, .. } = Metadata::decode(&buf)?;
+        for entry in meta.recovered_entries()? {
+            let Metadata { key, .. } = entry.data()?;
 
-            lookup.insert(key, KeyLookup { offset });
+            lookup.insert(key, entry);
         }
 
         Ok(Self {
@@ -113,17 +129,28 @@ where
     }
 
     pub fn delete(&mut self, key: &[u8]) -> Result<(), Error> {
-        if let Some(lookup) = self.lookup.remove(key) {
-            let mut buf = vec![0; METADATA_SIZE];
+        if let Some(mut entry) = self.lookup.remove(key) {
             // Need to use the push-side of the ring buffer for graveyard.
-            // We also need to make sure we set the flag for tombstone,
-            // which means the ringbuffer will need to have an update method.
-            self.meta.get(lookup.offset, &mut buf)?;
-            self.meta.update(lookup.offset, |data: &mut [u8]| {
-                let mut metadata = Metadata::decode(data).expect("metadata decode failed");
-                metadata.state = MetaState::Compacting;
-                metadata.encode(data).expect("metadata encode failed");
-            })?;
+            // We also need to make sure we set the flag for tombstone.
+            let mut meta = entry.data::<Metadata>()?;
+
+            match meta.state {
+                MetaState::Full => {}
+                MetaState::Compacting => {
+                    // Remove bad key!
+                    self.lookup.remove(key);
+                    return Err(Error::KeyNotFound(format!("{:?}", key)));
+                }
+            }
+
+            meta.state = MetaState::Compacting;
+
+            entry.update(&meta)?;
+
+            // needs to be tombstone!
+            let tombstone: Tombstone = meta.into();
+            let mut buf = vec![0; TOMBSTONE_SIZE];
+            tombstone.encode(&mut buf)?;
             self.pusher.push(&buf)?;
         }
 
@@ -164,12 +191,12 @@ where
     ///
     /// # Errors
     /// See [`Error`].
-    pub fn get<'a, 'b>(&'a mut self, key: &[u8], buf: &'b mut [u8]) -> Result<Lookup, Error>
+    pub fn get<'a, 'b>(&'a mut self, key: &Key, buf: &'b mut [u8]) -> Result<Lookup, Error>
     where
         'b: 'a,
     {
-        if let Some(lookup) = self.lookup.get(key) {
-            self.meta.get(lookup.offset, buf)?;
+        if let Some(entry) = self.lookup.get(key) {
+            let meta = entry.data::<Metadata>()?;
 
             let Metadata {
                 crc: _, // TODO: verify crc
@@ -177,7 +204,7 @@ where
                 offset,
                 state,
                 ..
-            } = Metadata::decode(buf)?;
+            } = meta;
 
             match state {
                 MetaState::Full => {}
@@ -225,25 +252,27 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    pub fn insert(&mut self, key: Key, value: &[u8]) -> Result<(), Error> {
         // We need to tombstone old entry if it exists.
-        if let Some(lookup) = self.lookup.get(key) {
-            let offset = lookup.offset;
-            let mut buf = vec![0; METADATA_SIZE];
+        if let Some(entry) = self.lookup.get(&key) {
+            let mut meta = entry.data::<Metadata>()?;
+
+            meta.state = MetaState::Compacting;
             // Need to use the push-side of the ring buffer for graveyard.
-            // We also need to make sure we set the flag for tombstone,
-            // which means the ringbuffer will need to have an update method.
-            self.meta.get(offset, &mut buf)?;
-            self.meta.update(offset, |data: &mut [u8]| {
-                let mut metadata = Metadata::decode(data).expect("metadata decode failed");
-                metadata.state = MetaState::Compacting;
-                metadata.encode(data).expect("metadata encode failed");
-            })?;
+            // We also need to make sure we set the flag for tombstone.
+            let tombstone: Tombstone = meta.into();
+            let mut buf = vec![0; TOMBSTONE_SIZE];
+            tombstone.encode(&mut buf)?;
             self.pusher.push(&buf)?;
         }
 
         // Dequeue needs to also return the offset and file of the data.
-        let Push { file, offset, crc } = self.dequeue.push(value)?;
+        let Push {
+            file,
+            offset,
+            len,
+            crc,
+        } = self.dequeue.push(value)?;
         self.dequeue.flush()?;
 
         // Need to store key here too...
@@ -251,15 +280,15 @@ where
             crc,
             file,
             offset,
+            len,
             state: MetaState::Full,
-            key: key.to_vec(),
+            key,
         };
-        let metadata = bincode::serialize(&metadata).expect("failed to serialize metadata");
-
         // Maybe we should have meta also be a ring buffer?
-        let offset = self.meta.push(&metadata)?;
+        let mut entry = self.meta.alloc()?;
+        entry.update(&metadata)?;
 
-        self.lookup.insert(key.to_vec(), KeyLookup { offset });
+        self.lookup.insert(key, entry);
 
         Ok(())
     }
@@ -267,10 +296,12 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::io::Write;
+
     use crate::{
         buffer::MmapBuffer,
         entry::Version,
-        kv_store::{Graveyard, Lookup},
+        kv_store::{key, Graveyard, Lookup},
         ring_buffer::ring_buffer,
     };
 
@@ -296,11 +327,11 @@ mod test {
             .expect("KVStore::new failed");
 
         store
-            .insert(b"pets", "cats".as_bytes())
+            .insert(key(b"pets"), "cats".as_bytes())
             .expect("insert failed");
 
         let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        let Lookup::Found(data) = store.get(&key(b"pets"), &mut buf).expect("key not found")
         else {
             panic!("key not found");
         };
@@ -322,26 +353,28 @@ mod test {
         let meta_path = path.join("meta.bin");
         let meta_path = meta_path.to_str().unwrap();
 
-        let data_path = path.join("data.bin");
+        let data_path = path.join("data");
         let data_path = data_path.to_str().unwrap();
 
         let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
             .expect("KVStore::new failed");
 
+        let pclone = path.clone();
         _ = std::thread::spawn(move || {
-            let graveyard = Graveyard::new(path.join("graveyard.bin"), popper);
+            let graveyard = Graveyard::new(pclone.join("data"), popper);
             graveyard.bury(1);
         });
 
         store
-            .insert(b"pets", "cats".as_bytes())
+            .insert(key(b"pets"), "cats".as_bytes())
             .expect("insert failed");
+
         store
-            .insert(b"pets", "dogs".as_bytes())
+            .insert(key(b"pets"), "dogs".as_bytes())
             .expect("insert failed");
 
         let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        let Lookup::Found(data) = store.get(&key(b"pets"), &mut buf).expect("key not found")
         else {
             panic!("key not found");
         };
@@ -349,7 +382,41 @@ mod test {
         let actual = data.into_inner();
         assert_eq!(actual, b"dogs");
 
-        store.delete(b"pets").expect("delete failed");
-        
+        store.delete(&key(b"pets")).expect("delete failed");
+        // Wait long enough for graveyard to run
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        // assert that the data folder is empty
+        let mut buf = vec![0; 64];
+        let Lookup::Absent = store.get(&key(b"pets"), &mut buf).expect("key not found")
+        else {
+            panic!("key not found");
+        };
+
+        assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
+        assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
+    }
+
+    fn tree(path: &std::path::Path) {
+        std::io::stdout()
+            .write_all(
+                &std::process::Command::new("tree")
+                    .arg(path)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap();
+    }
+
+    fn hexyl(path: &std::path::Path) {
+        std::io::stdout()
+            .write_all(
+                &std::process::Command::new("hexyl")
+                    .arg(path)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap();
     }
 }

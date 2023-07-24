@@ -117,6 +117,7 @@ pub enum Pop {
 pub struct Push {
     pub file: u64,
     pub offset: u64,
+    pub len: u64,
     pub crc: u32,
 }
 
@@ -213,7 +214,7 @@ where
                 read.pop(buf)?;
 
                 // drop old node.
-                unsafe { Box::from_raw(read_ptr) };
+                unsafe { drop(Box::from_raw(read_ptr)) };
                 // put in new node.
                 self.read.store(next_ptr, Ordering::Release);
 
@@ -231,9 +232,10 @@ where
 
         let write = unsafe { write.as_ref() };
         match write.push(buf) {
-            Ok(node::Push { offset, crc }) => Ok(Push {
+            Ok(node::Push { offset, len, crc }) => Ok(Push {
                 file: self.backing_generator.write_idx(),
                 offset,
+                len,
                 crc,
             }),
             Err(Error::NodeFull) => {
@@ -246,7 +248,7 @@ where
 
                 let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
 
-                let node::Push { offset, crc } = node.push(buf)?;
+                let node::Push { offset, len, crc } = node.push(buf)?;
 
                 let node = Box::into_raw(Box::new(node));
 
@@ -254,12 +256,13 @@ where
 
                 // allow for `write_ptr` to be dropped if not also pointed to by read half.
                 if write_ptr != self.read.load(Ordering::Acquire) {
-                    unsafe { Box::from_raw(write_ptr) };
+                    unsafe { drop(Box::from_raw(write_ptr)) };
                 }
 
                 Ok(Push {
                     file: index,
                     offset,
+                    len,
                     crc,
                 })
             }

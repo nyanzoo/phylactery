@@ -11,7 +11,7 @@ pub mod error;
 pub use error::Error;
 
 /// The version for encoding and decoding metadata and data.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[repr(C)]
 pub enum Version {
     V1,

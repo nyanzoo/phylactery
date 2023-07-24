@@ -6,6 +6,7 @@ use super::{Buffer, Error};
 
 pub struct InMemBuffer(UnsafeCell<Vec<u8>>);
 
+#[cfg_attr(nightly, no_coverage)]
 #[cfg(test)]
 impl Clone for InMemBuffer {
     fn clone(&self) -> Self {
