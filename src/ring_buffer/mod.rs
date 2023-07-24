@@ -45,18 +45,6 @@ where
         self.0.pop(buf)
     }
 
-    pub(crate) fn iter(&self) -> Iter<'_, B> {
-        self.0.iter()
-    }
-
-    pub(crate) fn get(&self, off: u64, buf: &mut [u8]) -> Result<(), Error> {
-        self.0.get(off, buf)
-    }
-
-    pub(crate) fn update(&self, off: u64, update_fn: impl FnOnce(&mut [u8])) -> Result<(), Error> {
-        self.0.update(off, update_fn)
-    }
-
     #[cfg(test)]
     fn inner(&self) -> &Inner<B> {
         &self.0
@@ -383,70 +371,6 @@ where
                 .store(read_ptr != write_ptr, Ordering::Release);
         }
         Ok(metadata.real_data_size() as usize)
-    }
-
-    /// # Description
-    /// Only called to reconstruct in memory map for [`KVStore`].
-    pub(crate) fn iter(&self) -> Iter<'_, B> {
-        Iter {
-            buffer: &self.buffer,
-            start: self.read_ptr.load(Ordering::Acquire),
-            end: self.read_ptr.load(Ordering::Acquire),
-            has_data: self.has_data.load(Ordering::Acquire),
-            version: self.version,
-        }
-    }
-
-    pub(crate) fn get(&self, off: u64, buf: &mut [u8]) -> Result<(), Error> {
-        let metadata = self
-            .buffer
-            .decode_at::<Metadata>(off as usize, Metadata::size(self.version) as usize)?;
-
-        // If the metadata CRC does not match, we can't read.
-        metadata.verify()?;
-
-        // If the data buffer is too small to hold the data, we can't read.
-        if buf.len() < metadata.real_data_size() as usize {
-            return Err(Error::BufferTooSmall(
-                buf.len() as u32,
-                metadata.real_data_size(),
-            ));
-        }
-
-        let off = off + Metadata::size(self.version) as u64;
-        let data: Data<'_> = self
-            .buffer
-            .decode_at(off as usize, metadata.data_size() as usize)?;
-        data.verify()?;
-        data.copy_into(buf);
-
-        Ok(())
-    }
-
-    // NOTE: this is only for KV store and the new data must be same size as original content!
-    pub(crate) fn update(&self, off: u64, update_fn: impl FnOnce(&mut [u8])) -> Result<(), Error> {
-        let metadata = self
-            .buffer
-            .decode_at::<Metadata>(off as usize, Metadata::size(self.version) as usize)?;
-
-        // If the metadata CRC does not match, we can't read.
-        metadata.verify()?;
-
-        let off = off + Metadata::size(self.version) as u64;
-        let data: Data<'_> = self
-            .buffer
-            .decode_at(off as usize, metadata.data_size() as usize)?;
-        data.verify()?;
-
-        let mut data_mut = data.as_mut();
-        data_mut.update(update_fn);
-
-        let data = data_mut.as_ref();
-
-        self.buffer
-            .encode_at(off as usize, metadata.data_size() as usize, &data)?;
-
-        Ok(())
     }
 }
 

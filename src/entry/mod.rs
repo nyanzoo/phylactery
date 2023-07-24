@@ -15,7 +15,7 @@ pub use error::Error;
 const VERSION_SIZE: usize = size_of::<u8>();
 
 /// The version for encoding and decoding metadata and data.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[repr(C)]
 pub enum Version {
     V1,
