@@ -88,14 +88,9 @@ where
     }
 }
 
-impl<W> Encode<W> for Node
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.next.encode(writer)?;
-        self.prev.encode(writer)?;
-        Ok(())
+impl Encode for Node {
+    fn encode(&self, buf: &mut [u8]) -> Result<(), crate::codec::Error> {
+        bincode::serialize_into(buf, self).map_err(codec::Error::from)
     }
 }
 
@@ -137,9 +132,9 @@ where
         Ok(t)
     }
 
-    pub fn update<'a, T>(&'a mut self, t: &T) -> Result<(), Error>
+    pub fn update<T>(&mut self, t: &T) -> Result<(), Error>
     where
-        T: Encode<Cursor<&'a mut [u8]>>,
+        T: Encode,
     {
         trace!(
             "data_start: {}, data_end: {}",

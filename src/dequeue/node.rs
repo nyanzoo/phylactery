@@ -41,6 +41,7 @@ where
 #[derive(Debug)]
 pub struct Push {
     pub offset: u64,
+    pub len: u64,
     pub crc: u32,
 }
 
@@ -191,6 +192,7 @@ where
 
         Ok(Push {
             offset,
+            len,
             crc: data.crc(),
         })
     }

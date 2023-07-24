@@ -116,6 +116,7 @@ where
 pub struct Push {
     pub file: u64,
     pub offset: u64,
+    pub len: u64,
     pub crc: u32,
 }
 
@@ -224,9 +225,10 @@ impl Inner {
 
         let write = unsafe { write.as_ref() };
         match write.push(buf) {
-            Ok(node::Push { offset, crc }) => Ok(Push {
+            Ok(node::Push { offset, len, crc }) => Ok(Push {
                 file: self.backing_generator.write_idx(),
                 offset,
+                len,
                 crc,
             }),
             Err(Error::NodeFull) => {
@@ -239,7 +241,7 @@ impl Inner {
 
                 let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
 
-                let node::Push { offset, crc } = node.push(buf)?;
+                let node::Push { offset, len, crc } = node.push(buf)?;
 
                 let node = Box::into_raw(Box::new(node));
 
@@ -253,6 +255,7 @@ impl Inner {
                 Ok(Push {
                     file: index,
                     offset,
+                    len,
                     crc,
                 })
             }

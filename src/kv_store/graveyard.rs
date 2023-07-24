@@ -101,6 +101,9 @@ impl Graveyard {
         }
     }
 
+    // The problem is we also need to update the metadata for the dequeue.
+    // We can't just delete the data, we need to update the metadata to say
+    // that the data is no longer there and somewhere else (if just moved).;p[''']
     pub fn bury(self, interval: u64) -> ! {
         let interval = Duration::from_secs(interval);
         loop {
@@ -200,4 +203,12 @@ impl Graveyard {
 
         out_buf
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Graveyard, Tombstone};
+
+    #[test]
+    fn test_name() {}
 }

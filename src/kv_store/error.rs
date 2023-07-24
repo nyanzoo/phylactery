@@ -1,5 +1,8 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("alloc error: {0}")]
+    Alloc(#[from] crate::alloc::Error),
+
     #[error("buffer err: {0}")]
     Buffer(#[from] crate::buffer::Error),
 

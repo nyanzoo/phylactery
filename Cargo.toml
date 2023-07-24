@@ -20,7 +20,6 @@ necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "deve
 
 [dev-dependencies]
 coverage-helper = "0"
-criterion = "0.5"
 matches = "0"
 tempfile = "3"
 test-case = "3"

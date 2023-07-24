@@ -6,6 +6,7 @@ pub mod config;
 
 mod graveyard;
 pub use graveyard::Graveyard;
+use graveyard::{Tombstone, TOMBSTONE_SIZE};
 
 mod metadata;
 
@@ -53,10 +54,12 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::io::Write;
+
     use crate::{
         buffer::MmapBuffer,
         entry::Version,
-        kv_store::{Graveyard, Lookup},
+        kv_store::{key, Graveyard, Lookup},
         ring_buffer::ring_buffer,
     };
 
@@ -82,11 +85,11 @@ mod test {
             .expect("KVStore::new failed");
 
         store
-            .insert(b"pets", "cats".as_bytes())
+            .insert(key(b"pets"), "cats".as_bytes())
             .expect("insert failed");
 
         let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        let Lookup::Found(data) = store.get(&key(b"pets"), &mut buf).expect("key not found")
         else {
             panic!("key not found");
         };
@@ -108,26 +111,28 @@ mod test {
         let meta_path = path.join("meta.bin");
         let meta_path = meta_path.to_str().unwrap();
 
-        let data_path = path.join("data.bin");
+        let data_path = path.join("data");
         let data_path = data_path.to_str().unwrap();
 
         let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
             .expect("KVStore::new failed");
 
+        let pclone = path.clone();
         _ = std::thread::spawn(move || {
-            let graveyard = Graveyard::new(path.join("graveyard.bin"), popper);
+            let graveyard = Graveyard::new(pclone.join("data"), popper);
             graveyard.bury(1);
         });
 
         store
-            .insert(b"pets", "cats".as_bytes())
+            .insert(key(b"pets"), "cats".as_bytes())
             .expect("insert failed");
+
         store
-            .insert(b"pets", "dogs".as_bytes())
+            .insert(key(b"pets"), "dogs".as_bytes())
             .expect("insert failed");
 
         let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(b"pets", &mut buf).expect("key not found")
+        let Lookup::Found(data) = store.get(&key(b"pets"), &mut buf).expect("key not found")
         else {
             panic!("key not found");
         };
@@ -135,7 +140,41 @@ mod test {
         let actual = data.into_inner();
         assert_eq!(actual, b"dogs");
 
-        store.delete(b"pets").expect("delete failed");
-        
+        store.delete(&key(b"pets")).expect("delete failed");
+        // Wait long enough for graveyard to run
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        // assert that the data folder is empty
+        let mut buf = vec![0; 64];
+        let Lookup::Absent = store.get(&key(b"pets"), &mut buf).expect("key not found")
+        else {
+            panic!("key not found");
+        };
+
+        assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
+        assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
+    }
+
+    fn tree(path: &std::path::Path) {
+        std::io::stdout()
+            .write_all(
+                &std::process::Command::new("tree")
+                    .arg(path)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap();
+    }
+
+    fn hexyl(path: &std::path::Path) {
+        std::io::stdout()
+            .write_all(
+                &std::process::Command::new("hexyl")
+                    .arg(path)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap();
     }
 }
