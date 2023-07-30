@@ -207,7 +207,6 @@ impl Graveyard {
 
 #[cfg(test)]
 mod tests {
-    use super::{Graveyard, Tombstone};
 
     #[test]
     fn test_name() {}

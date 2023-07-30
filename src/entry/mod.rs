@@ -14,50 +14,6 @@ pub use version::Version;
 mod writable;
 pub use writable::Writable;
 
-#[derive(Debug, Eq, PartialEq)]
-#[repr(C)]
-pub enum DataMut<'a> {
-    Version1(v1::DataMut<'a>),
-}
-
-impl<'a> DataMut<'a> {
-    pub fn copy_into(self, buf: &mut [u8]) {
-        match self {
-            Self::Version1(data) => data.copy_into(buf),
-        }
-    }
-
-    pub const fn size(&self) -> u32 {
-        match self {
-            Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
-        }
-    }
-
-    pub fn verify(&self) -> Result<(), Error> {
-        match self {
-            Self::Version1(data) => data.verify(),
-        }
-    }
-
-    pub fn crc(&self) -> u32 {
-        match self {
-            Self::Version1(data) => data.crc,
-        }
-    }
-
-    pub fn update(&mut self, update_fn: impl FnOnce(&mut [u8])) {
-        match self {
-            Self::Version1(inner) => inner.update(update_fn),
-        }
-    }
-
-    pub fn as_ref(self) -> Data<'a> {
-        match self {
-            Self::Version1(data) => Data::Version1(data.as_ref()),
-        }
-    }
-}
-
 pub fn crc_check(expected: u32, data: &[u8]) -> Result<(), Error> {
     let mut actual = crc32fast::Hasher::new();
     actual.update(data);
@@ -154,7 +110,7 @@ mod tests {
         });
 
         // create a buffer to write the data to
-        let mut buf = vec![];
+        let mut buf = vec![0u8; 1024];
 
         // write the data to the buffer
         let result = data.encode(&mut buf);

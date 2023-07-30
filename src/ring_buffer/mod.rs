@@ -37,7 +37,7 @@ where
         Ok(Self(Arc::new(Inner::new(buffer, version)?)))
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
         self.0.push(buf)
     }
 
@@ -131,7 +131,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -142,7 +142,7 @@ where
         let has_data = self.has_data.load(Ordering::Acquire);
 
         let len = buf.len() as u32;
-        let entry_size = Metadata::struct_size(self.version) as u64
+        let entry_size = Metadata::size(self.version) as u64
             + Metadata::calculate_data_size(self.version, len) as u64;
         let data = Writable::new(self.version, buf);
         let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
@@ -462,7 +462,7 @@ where
         Self(buffer)
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
         self.0.push(buf)
     }
 }
@@ -539,7 +539,7 @@ mod tests {
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         for _ in 0..5 {
-            ring_buffer.push(b"kittens").expect("push");
+            ring_buffer.push(b"kittens".to_vec()).expect("push");
         }
 
         let pool = PoolImpl::new(1024, 1024);
@@ -551,7 +551,7 @@ mod tests {
         }
 
         // We don't write the read ptr on reads, so to test we do another write.
-        ring_buffer.push(b"kittens").expect("push");
+        ring_buffer.push(b"kittens".to_vec()).expect("push");
 
         let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::Acquire);
         let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::Acquire);
@@ -691,11 +691,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::struct_size(Version::V1) as usize],
+            &mut buf[..Metadata::size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::struct_size(Version::V1) as usize..],
+            &mut buf[Metadata::size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -827,7 +827,7 @@ mod tests {
 
         file.seek(SeekFrom::Start(DATA_SPOT1 as u64))
             .expect("seek to start");
-        let mut buf = vec![];
+        let mut buf = vec![0; 1024];
         data.encode(&mut buf).unwrap();
         file.write_all(&buf[..(1024 - DATA_SPOT1) as usize])
             .expect("write data");
@@ -875,11 +875,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::struct_size(Version::V1) as usize],
+            &mut buf[..Metadata::size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::struct_size(Version::V1) as usize..],
+            &mut buf[Metadata::size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -915,11 +915,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::struct_size(Version::V1) as usize],
+            &mut buf[..Metadata::size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::struct_size(Version::V1) as usize..],
+            &mut buf[Metadata::size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -1027,7 +1027,7 @@ mod tests {
         let _ = file.read(&mut data).unwrap();
 
         let Metadata::Version1(meta) = Metadata::decode(&mut Cursor::new(
-            &data[..Metadata::struct_size(Version::V1) as usize],
+            &data[..Metadata::size(Version::V1) as usize],
         ))
         .unwrap();
         meta.verify().unwrap();

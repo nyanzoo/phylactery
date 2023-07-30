@@ -58,6 +58,43 @@ where
     }
 }
 
+impl<W> Encode<W> for Metadata
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.mask.encode(writer)?;
+        self.entry.encode(writer)?;
+        self.read_ptr.encode(writer)?;
+        self.write_ptr.encode(writer)?;
+        self.size.encode(writer)?;
+        self.crc.encode(writer)?;
+        Ok(())
+    }
+}
+
+impl<R> Decode<R> for Metadata
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error> {
+        let mask = u32::decode(reader)?;
+        let entry = u64::decode(reader)?;
+        let read_ptr = u64::decode(reader)?;
+        let write_ptr = u64::decode(reader)?;
+        let size = u32::decode(reader)?;
+        let crc = u32::decode(reader)?;
+        Ok(Self {
+            mask,
+            entry,
+            read_ptr,
+            write_ptr,
+            size,
+            crc,
+        })
+    }
+}
+
 impl PartialOrd for Metadata {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))

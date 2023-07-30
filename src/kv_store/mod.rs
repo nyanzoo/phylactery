@@ -56,10 +56,12 @@ where
 mod test {
     use std::io::Write;
 
+    use necronomicon::kv_store_codec::Key;
+
     use crate::{
         buffer::MmapBuffer,
         entry::Version,
-        kv_store::{key, Graveyard, Lookup},
+        kv_store::{Graveyard, Lookup},
         ring_buffer::ring_buffer,
     };
 
@@ -154,6 +156,13 @@ mod test {
         assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
     }
 
+    fn key(key: &[u8]) -> Key {
+        let mut buf = [0; 32];
+        buf[..key.len()].copy_from_slice(key);
+        Key::from(buf)
+    }
+
+    #[allow(dead_code)]
     fn tree(path: &std::path::Path) {
         std::io::stdout()
             .write_all(
@@ -166,6 +175,7 @@ mod test {
             .unwrap();
     }
 
+    #[allow(dead_code)]
     fn hexyl(path: &std::path::Path) {
         std::io::stdout()
             .write_all(
