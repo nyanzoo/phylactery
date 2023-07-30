@@ -1,9 +1,13 @@
-use std::{cell::UnsafeCell, mem::size_of, ptr::NonNull};
-
-use crate::{
-    buffer::Buffer,
-    codec::{self, Decode, Encode},
+use std::{
+    cell::UnsafeCell,
+    io::{Cursor, Read, Write},
+    mem::size_of,
+    ptr::NonNull,
 };
+
+use necronomicon::{Decode, Encode};
+
+use crate::buffer::Buffer;
 
 mod error;
 pub(crate) use error::Error;
@@ -11,7 +15,6 @@ pub(crate) use error::Error;
 // We need to be able to recover from a crash.
 // We can only do this if the Node contains info on
 // whether it is free or not.
-#[derive(serde::Deserialize, serde::Serialize)]
 struct Node {
     next: usize,
     prev: usize,
@@ -21,18 +24,28 @@ const NODE_SIZE: usize = size_of::<Node>();
 const NODE_DATA_OFFSET: usize = NODE_SIZE;
 const SENTINEL_SIZE: usize = size_of::<usize>();
 
-impl Decode<'_> for Node {
-    fn decode(buf: &'_ [u8]) -> Result<Self, crate::codec::Error>
+impl<R> Decode<R> for Node
+where
+    R: Read,
+{
+    fn decode(buf: &mut R) -> Result<Self, necronomicon::Error>
     where
         Self: Sized,
     {
-        bincode::deserialize(buf).map_err(codec::Error::from)
+        let next = usize::decode(buf)?;
+        let prev = usize::decode(buf)?;
+        Ok(Node { next, prev })
     }
 }
 
-impl Encode for Node {
-    fn encode(&self, buf: &mut [u8]) -> Result<(), crate::codec::Error> {
-        bincode::serialize_into(buf, self).map_err(codec::Error::from)
+impl<W> Encode<W> for Node
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.next.encode(writer)?;
+        self.prev.encode(writer)?;
+        Ok(())
     }
 }
 
@@ -52,23 +65,24 @@ where
 {
     pub fn data<'a, T>(&'a self) -> Result<T, Error>
     where
-        T: Decode<'a>,
+        T: Decode<&'a [u8]>,
     {
         let buf = self.buffer_ref().as_ref();
-        let buf = &buf[self.data_start..self.data_end];
-        let t = T::decode(buf)?;
+        let mut buf = &buf[self.data_start..self.data_end];
+        let t = T::decode(&mut buf)?;
         Ok(t)
     }
 
-    pub fn update<T>(&mut self, t: &T) -> Result<(), Error>
+    pub fn update<'a, T>(&'a mut self, t: &T) -> Result<(), Error>
     where
-        T: Encode,
+        T: Encode<Cursor<&'a mut [u8]>>,
     {
         let start = self.data_start;
         let end = self.data_end;
         let buf = self.buffer_mut().as_mut();
         let buf = &mut buf[start..end];
-        t.encode(buf)?;
+        let mut buf = Cursor::new(buf);
+        t.encode(&mut buf)?;
         Ok(())
     }
 

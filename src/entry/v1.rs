@@ -61,6 +61,43 @@ where
     }
 }
 
+impl<W> Encode<W> for Metadata
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.mask.encode(writer)?;
+        self.entry.encode(writer)?;
+        self.read_ptr.encode(writer)?;
+        self.write_ptr.encode(writer)?;
+        self.size.encode(writer)?;
+        self.crc.encode(writer)?;
+        Ok(())
+    }
+}
+
+impl<R> Decode<R> for Metadata
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error> {
+        let mask = u32::decode(reader)?;
+        let entry = u64::decode(reader)?;
+        let read_ptr = u64::decode(reader)?;
+        let write_ptr = u64::decode(reader)?;
+        let size = u32::decode(reader)?;
+        let crc = u32::decode(reader)?;
+        Ok(Self {
+            mask,
+            entry,
+            read_ptr,
+            write_ptr,
+            size,
+            crc,
+        })
+    }
+}
+
 impl PartialOrd for Metadata {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -146,37 +183,63 @@ impl Metadata {
     }
 }
 
-#[derive(Clone, Debug, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq)]
 #[repr(C)]
-pub struct Data<'a> {
+pub struct Data {
     // The data of the entry.
-    pub(crate) data: Vec<u8>,
+    pub data: Vec<u8>,
     // The crc of the data.
     crc: u32,
 }
 
-impl<'a> PartialEq for Data<'a> {
+impl<W> Encode<W> for Data
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.data.encode(writer)?;
+        self.crc.encode(writer)?;
+        Ok(())
+    }
+}
+
+impl<R> Decode<R> for Data
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        let data = Vec::decode(reader)?;
+        let crc = u32::decode(reader)?;
+        Ok(Self { data, crc })
+    }
+}
+
+impl PartialEq for Data {
     fn eq(&self, other: &Self) -> bool {
         self.crc == other.crc
     }
 }
 
-impl<'a> Data<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
-        let crc = generate_crc(data);
+impl Data {
+    pub fn new(data: Vec<u8>) -> Self {
+        let crc = generate_crc(&data);
         Self { data, crc }
     }
 
     pub fn copy_into(self, buf: &mut [u8]) {
-        buf[..self.data.len()].copy_from_slice(self.data);
+        let len = std::cmp::min(buf.len(), self.data.len());
+        buf[..len].copy_from_slice(&self.data[..len]);
     }
 
-    pub const fn size(&self) -> u32 {
+    pub fn size(&self) -> u32 {
         8 + self.data.len() as u32 + size_of::<u32>() as u32
     }
 
     pub fn verify(&self) -> Result<(), Error> {
-        let crc = generate_crc(self.data);
+        let crc = generate_crc(&self.data);
         if crc != self.crc {
             return Err(Error::DataCrcMismatch {
                 expected: self.crc,
@@ -184,65 +247,6 @@ impl<'a> Data<'a> {
             });
         }
         Ok(())
-    }
-}
-
-    // Might need to come up with different idea here, as it might not work with compiler.
-    // Though we do need a way to modify in-place.
-    #[allow(mutable_transmutes)]
-    pub fn as_mut(self) -> DataMut<'a> {
-        DataMut {
-            data: unsafe { std::mem::transmute(self.data) },
-            crc: self.crc,
-        }
-    }
-}
-
-#[derive(Debug, Eq)]
-#[repr(C)]
-pub struct DataMut<'a> {
-    // The data of the entry.
-    pub data: &'a mut [u8],
-    // The crc of the data.
-    pub crc: u32,
-}
-
-impl<'a> PartialEq for DataMut<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        self.crc == other.crc
-    }
-}
-
-impl<'a> DataMut<'a> {
-    pub fn copy_into(self, buf: &mut [u8]) {
-        buf[..self.data.len()].copy_from_slice(self.data);
-    }
-
-    pub const fn size(&self) -> u32 {
-        8 + self.data.len() as u32 + size_of::<u32>() as u32
-    }
-
-    pub fn verify(&self) -> Result<(), Error> {
-        let crc = generate_crc(self.data);
-        if crc != self.crc {
-            return Err(Error::DataCrcMismatch {
-                expected: self.crc,
-                actual: crc,
-            });
-        }
-        Ok(())
-    }
-
-    pub fn update(&mut self, update_fn: impl FnOnce(&mut [u8])) {
-        update_fn(self.data);
-        self.crc = generate_crc(self.data);
-    }
-
-    pub fn as_ref(self) -> Data<'a> {
-        Data {
-            data: unsafe { std::mem::transmute(self.data) },
-            crc: self.crc,
-        }
     }
 }
 

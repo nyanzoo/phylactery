@@ -15,29 +15,10 @@ pub use error::Error;
 const VERSION_SIZE: usize = size_of::<u8>();
 
 /// The version for encoding and decoding metadata and data.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub enum Version {
     V1,
-}
-
-impl From<Version> for u8 {
-    fn from(val: Version) -> Self {
-        match val {
-            Version::V1 => 1,
-        }
-    }
-}
-
-impl TryFrom<u8> for Version {
-    type Error = Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::V1),
-            _ => Err(Error::InvalidVersion(value)),
-        }
-    }
 }
 
 impl<W> Encode<W> for Version
@@ -179,14 +160,14 @@ where
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
-pub enum Data<'a> {
-    Version1(v1::Data<'a>),
+pub enum Data {
+    Version1(v1::Data),
 }
 
-impl<'a> Data<'a> {
-    pub fn new(version: Version, data: &'a [u8]) -> Self {
+impl Data {
+    pub fn new(version: Version, data: Vec<u8>) -> Self {
         match version {
             Version::V1 => Self::Version1(v1::Data::write(data)),
         }
@@ -198,13 +179,13 @@ impl<'a> Data<'a> {
         }
     }
 
-    pub fn into_inner(self) -> &'a [u8] {
+    pub fn into_inner(self) -> Vec<u8> {
         match self {
             Self::Version1(data) => data.data,
         }
     }
 
-    pub const fn size(&self) -> u32 {
+    pub fn size(&self) -> u32 {
         match self {
             Self::Version1(data) => match data {
                 v1::Data::Read(data) => data.data,
@@ -213,7 +194,7 @@ impl<'a> Data<'a> {
         }
     }
 
-    pub fn struct_size(&self) -> u32 {
+    pub fn split_at<'a>(&'a self, idx: usize) -> (&'a [u8], &'a [u8]) {
         match self {
             Self::Version1(data) => VERSION_SIZE as u32 + data.struct_size(),
         }
@@ -239,22 +220,9 @@ impl<'a> Data<'a> {
             Self::Version1(data) => data.crc,
         }
     }
-
-    pub fn as_mut(self) -> DataMut<'a> {
-        match self {
-            Data::Version1(data) => DataMut::Version1(data.as_mut()),
-        }
-    }
 }
 
-    pub fn crc(&self) -> u32 {
-        match self {
-            Self::Version1(data) => data.crc(),
-        }
-    }
-}
-
-impl<R> Decode<R> for Data<'_>
+impl<R> Decode<R> for Data
 where
     R: Read,
 {
@@ -266,7 +234,7 @@ where
     }
 }
 
-impl<W> Encode<W> for Data<'_>
+impl<W> Encode<W> for Data
 where
     W: Write,
 {
@@ -278,50 +246,6 @@ where
             }
         }
         Ok(())
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-#[repr(C)]
-pub enum DataMut<'a> {
-    Version1(v1::DataMut<'a>),
-}
-
-impl<'a> DataMut<'a> {
-    pub fn copy_into(self, buf: &mut [u8]) {
-        match self {
-            Self::Version1(data) => data.copy_into(buf),
-        }
-    }
-
-    pub const fn size(&self) -> u32 {
-        match self {
-            Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
-        }
-    }
-
-    pub fn verify(&self) -> Result<(), Error> {
-        match self {
-            Self::Version1(data) => data.verify(),
-        }
-    }
-
-    pub fn crc(&self) -> u32 {
-        match self {
-            Self::Version1(data) => data.crc,
-        }
-    }
-
-    pub fn update(&mut self, update_fn: impl FnOnce(&mut [u8])) {
-        match self {
-            Self::Version1(inner) => inner.update(update_fn),
-        }
-    }
-
-    pub fn as_ref(self) -> Data<'a> {
-        match self {
-            Self::Version1(data) => Data::Version1(data.as_ref()),
-        }
     }
 }
 
@@ -411,13 +335,13 @@ mod tests {
     #[test]
     fn test_data_write() {
         // create a Data instance to write
-        let data = Data::Version1(v1::Data::Write(v1::DataWrite {
-            data: "kittens".as_bytes(),
-            crc: 2940700499,
-        }));
+        let data = Data::Version1(v1::Data {
+            data: "kittens".as_bytes().to_vec(),
+            crc: 1234,
+        });
 
         // create a buffer to write the data to
-        let mut buf = vec![];
+        let mut buf = vec![0u8; 1024];
 
         // write the data to the buffer
         let result = data.encode(&mut buf);

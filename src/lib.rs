@@ -4,8 +4,6 @@ mod alloc;
 
 pub mod buffer;
 
-pub mod codec;
-
 pub mod dequeue;
 
 pub mod entry;

@@ -140,8 +140,8 @@ where
         let read_ptr = self.read.load(Ordering::Acquire);
         let entry = self.entry.load(Ordering::Acquire) + 1;
 
-        let data = Data::new(self.version, buf);
-        let entry_size = Metadata::struct_size(self.version) as u64
+        let data = Data::new(self.version, buf.to_vec());
+        let entry_size = Metadata::size(self.version) as u64
             + Metadata::calculate_data_size(self.version, buf.len() as u32) as u64;
         let metadata = Metadata::new(
             self.version,

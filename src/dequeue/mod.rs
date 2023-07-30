@@ -1,6 +1,6 @@
 use std::{
     fs::{create_dir_all, OpenOptions},
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     os::unix::prelude::FileExt,
     path::Path,
     ptr::NonNull,
@@ -10,9 +10,10 @@ use std::{
     },
 };
 
+use necronomicon::Decode;
+
 use crate::{
     buffer::InMemBuffer,
-    codec::Decode,
     entry::{Data, Metadata, Version},
 };
 
@@ -299,9 +300,9 @@ where
         &self,
         file: u64,
         offset: u64,
-        buf: &'a mut [u8],
+        buf: &'a mut Vec<u8>,
         version: Version,
-    ) -> Result<Data<'a>, Error> {
+    ) -> Result<Data, Error> {
         let mut meta_buf = vec![0; Metadata::size(version) as usize];
 
         let file = OpenOptions::new().read(true).open(format!(
@@ -311,11 +312,11 @@ where
         ))?;
         file.read_at(&mut meta_buf, offset)?;
 
-        let meta = Metadata::decode(&meta_buf)?;
+        let meta = Metadata::decode(&mut Cursor::new(&mut meta_buf))?;
         meta.verify()?;
 
         file.read_at(buf, offset + Metadata::size(version) as u64)?;
-        let data = Data::decode(buf)?;
+        let data = Data::decode(&mut Cursor::new(buf))?;
 
         Ok(data)
     }
@@ -370,12 +371,7 @@ where
         self.0.pop(buf)
     }
 
-    pub(crate) fn get<'a>(
-        &self,
-        file: u64,
-        offset: u64,
-        buf: &'a mut [u8],
-    ) -> Result<Data<'a>, Error> {
+    pub(crate) fn get(&self, file: u64, offset: u64, buf: &mut Vec<u8>) -> Result<Data, Error> {
         self.0.get(file, offset, buf, self.0.version)
     }
 }

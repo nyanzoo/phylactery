@@ -6,9 +6,6 @@ pub enum Error {
     #[error("buffer error {0}")]
     Buffer(#[from] crate::buffer::Error),
 
-    #[error("codec error {0}")]
-    Codec(#[from] crate::codec::Error),
-
     #[error("dequeue error {0}")]
     Dequeue(#[from] crate::dequeue::Error),
 

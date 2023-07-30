@@ -5,8 +5,8 @@ pub enum Error {
     #[error("buffer error {0}")]
     Buffer(#[from] crate::buffer::Error),
 
-    #[error("codec error {0}")]
-    Codec(#[from] crate::codec::Error),
+    #[error("necronomicon error {0}")]
+    Necronomicon(#[from] necronomicon::Error),
 
     #[error("out of memory {used}/{total}")]
     OutOfMemory {

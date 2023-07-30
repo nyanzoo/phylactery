@@ -1,19 +1,20 @@
 use std::{
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     mem::size_of,
     path::PathBuf,
     time::Duration,
 };
 
+use necronomicon::{Decode, Encode};
+
 use crate::{
     buffer::{InMemBuffer, MmapBuffer},
-    codec::{self, Decode, Encode},
     ring_buffer,
 };
 
 pub(crate) const TOMBSTONE_SIZE: usize = size_of::<Tombstone>();
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug)]
 pub(crate) struct Tombstone {
     pub crc: u32,
     pub file: u64,
@@ -21,15 +22,37 @@ pub(crate) struct Tombstone {
     pub len: u64,
 }
 
-impl Encode for Tombstone {
-    fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
-        Ok(bincode::serialize_into(buf, self)?)
+impl<W> Encode<W> for Tombstone
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.crc.encode(writer)?;
+        self.file.encode(writer)?;
+        self.offset.encode(writer)?;
+        self.len.encode(writer)?;
+        Ok(())
     }
 }
 
-impl Decode<'_> for Tombstone {
-    fn decode(buf: &[u8]) -> Result<Self, codec::Error> {
-        Ok(bincode::deserialize(buf)?)
+impl<R> Decode<R> for Tombstone
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        let crc = u32::decode(reader)?;
+        let file = u64::decode(reader)?;
+        let offset = u64::decode(reader)?;
+        let len = u64::decode(reader)?;
+        Ok(Tombstone {
+            crc,
+            file,
+            offset,
+            len,
+        })
     }
 }
 
@@ -115,7 +138,8 @@ impl Graveyard {
         // then we will delete data we should keep. Is this true still?
         while let Ok(bytes) = self.popper.pop(&mut buf) {
             assert!(bytes == len, "invalid tombstone length");
-            let tomb = Tombstone::decode(&buf).expect("failed to decode tombstone");
+            let tomb =
+                Tombstone::decode(&mut Cursor::new(&mut buf)).expect("failed to decode tombstone");
 
             if nodes.is_empty() {
                 nodes.push(vec![]);
@@ -158,7 +182,6 @@ impl Graveyard {
 
 #[cfg(test)]
 mod tests {
-    use super::{Graveyard, Tombstone};
 
     #[test]
     fn test_name() {}
