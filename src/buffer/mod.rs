@@ -1,4 +1,6 @@
-use crate::codec::{Decode, Encode};
+use std::io::Cursor;
+
+use necronomicon::{Decode,Encode};
 
 mod error;
 pub use error::Error;
@@ -29,7 +31,7 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// The decoded value of type `T`.
     fn decode_at<'a, T>(&'a self, off: usize, len: usize) -> Result<T, Error>
     where
-        T: Decode<'a>;
+        T: Decode<Cursor<&'a [u8]>>;
 
     /// # Description
     /// Encodes the given `data` at the given `off`set and `len`gth.
@@ -46,9 +48,9 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// # Errors
     /// This function will return an error if the data cannot be encoded into the buffer.
     /// See [`error::Error`] for more details.
-    fn encode_at<T>(&self, off: usize, len: usize, data: &T) -> Result<(), Error>
+    fn encode_at<'a, T>(&'a self, off: usize, len: usize, data: &T) -> Result<(), Error>
     where
-        T: Encode;
+        T: Encode<Cursor<&'a mut [u8]>>;
 
     /// # Description
     /// Read from the buffer at the given offset into the `buf`

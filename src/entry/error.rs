@@ -1,8 +1,5 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("bincode err: {0}")]
-    Bincode(#[from] bincode::Error),
-
     #[error("buffer err: {0}")]
     Buffer(#[from] crate::buffer::Error),
 

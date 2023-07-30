@@ -9,11 +9,12 @@ version = "0.1.0"
 name = "phylactery"
 
 [dependencies]
-bincode = "1"
 crc32fast = "1"
 memmap2 = "0"
-serde = {version = "1", features = ["derive"]}
 thiserror = "1"
+
+# necronomicon = {git = "https://github.com/nyanzoo/necronomicon"}
+necronomicon = { path = "../necronomicon" }
 
 [dev-dependencies]
 coverage-helper = "0"

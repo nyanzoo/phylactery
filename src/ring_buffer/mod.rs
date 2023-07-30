@@ -1,16 +1,19 @@
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+use std::{
+    io::Cursor,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use crate::{
     buffer::Buffer,
-    codec::Encode,
     entry::{crc_check, last_metadata, Data, Metadata, Version},
 };
 
 pub mod error;
 pub use error::Error;
+use necronomicon::Encode;
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
 where
@@ -35,7 +38,7 @@ where
         Ok(Self(Arc::new(Inner::new(buffer, version)?)))
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
         self.0.push(buf)
     }
 
@@ -119,7 +122,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -129,16 +132,11 @@ where
         let entry = self.entry.load(Ordering::Acquire) + 1;
         let has_data = self.has_data.load(Ordering::Acquire);
 
-        let data = Data::new(self.version, buf);
+        let len = buf.len() as u32;
         let entry_size = Metadata::size(self.version) as u64
-            + Metadata::calculate_data_size(self.version, buf.len() as u32) as u64;
-        let metadata = Metadata::new(
-            self.version,
-            entry,
-            read_ptr,
-            write_ptr + entry_size,
-            buf.len() as u32,
-        );
+            + Metadata::calculate_data_size(self.version, len) as u64;
+        let data = Data::new(self.version, buf);
+        let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
 
         // If the entry is too big, we can't write.
         if entry_size > self.buffer.capacity() {
@@ -203,7 +201,7 @@ where
         if write_ptr + metadata.data_size() as u64 > self.buffer.capacity() {
             let remaining = self.buffer.capacity() - write_ptr;
             let mut temp = vec![0; metadata.data_size() as usize];
-            data.encode(&mut temp)?;
+            data.encode(&mut Cursor::new(&mut temp))?;
             let (left, right) = temp.split_at(remaining as usize);
 
             self.buffer.write_at(left, write_ptr as usize)?;
@@ -326,7 +324,7 @@ where
 
             read_ptr += 4;
         } else {
-            let data: Data<'_> = self
+            let data: Data = self
                 .buffer
                 .decode_at(read_ptr as usize, metadata.data_size() as usize)?;
             data.verify()?;
@@ -402,7 +400,7 @@ where
         Self(buffer)
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
         self.0.push(buf)
     }
 }
@@ -441,18 +439,17 @@ mod tests {
 
     use std::{
         fs::OpenOptions,
-        io::{Read, Seek, SeekFrom, Write},
-        os::unix::prelude::FileExt,
+        io::{Cursor, Read, Seek, SeekFrom, Write},
         sync::atomic::Ordering,
         thread::{sleep, spawn},
         time::Duration,
     };
 
     use matches::assert_matches;
+    use necronomicon::{Decode, Encode};
 
     use crate::{
         buffer::{InMemBuffer, MmapBuffer},
-        codec::Encode,
         entry::{self, Data, Metadata, Version},
     };
 
@@ -468,7 +465,7 @@ mod tests {
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         for _ in 0..5 {
-            ring_buffer.push(b"kittens").expect("push");
+            ring_buffer.push(b"kittens".to_vec()).expect("push");
         }
 
         let mut buf = [0u8; 1024];
@@ -479,7 +476,7 @@ mod tests {
         }
 
         // We don't write the read ptr on reads, so to test we do another write.
-        ring_buffer.push(b"kittens").expect("push");
+        ring_buffer.push(b"kittens".to_vec()).expect("push");
 
         let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::Acquire);
         let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::Acquire);
@@ -537,14 +534,13 @@ mod tests {
             }
         }
 
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(file)
             .expect("open file");
 
-        file.write_at(bincode::serialize(&meta).unwrap().as_slice(), 0)
-            .expect("write metadata");
+        meta.encode(&mut file).unwrap();
 
         let mut data = vec![0u8; 20];
         let result = ring_buffer.pop(&mut data);
@@ -577,7 +573,7 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let mut data = Data::new(Version::V1, data.as_bytes());
+        let mut data = Data::new(Version::V1, data.as_bytes().to_vec());
         match &mut data {
             Data::Version1(data) => {
                 data.crc = 1234567;
@@ -585,10 +581,14 @@ mod tests {
         }
 
         let mut buf = vec![0u8; 1024];
-        meta.encode(&mut buf[..Metadata::size(Version::V1) as usize])
-            .unwrap();
-        data.encode(&mut buf[Metadata::size(Version::V1) as usize..])
-            .unwrap();
+        meta.encode(&mut Cursor::new(
+            &mut buf[..Metadata::size(Version::V1) as usize],
+        ))
+        .unwrap();
+        data.encode(&mut Cursor::new(
+            &mut buf[Metadata::size(Version::V1) as usize..],
+        ))
+        .unwrap();
         file.write_all(&buf).expect("write");
 
         let mut data = vec![0u8; 40];
@@ -622,12 +622,10 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes());
+        let data = Data::new(Version::V1, data.as_bytes().to_vec());
 
-        file.write_all(bincode::serialize(&meta).unwrap().as_slice())
-            .expect("write metadata");
-        file.write_all(bincode::serialize(&data).unwrap().as_slice())
-            .expect("write data");
+        meta.encode(&mut file).unwrap();
+        data.encode(&mut file).unwrap();
 
         let mut data = vec![0u8; 1];
         let result = ring_buffer.pop(&mut data);
@@ -662,17 +660,15 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes());
+        let data = Data::new(Version::V1, data.as_bytes().to_vec());
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
-        file.write_all(bincode::serialize(&meta).unwrap().as_slice())
-            .expect("write metadata");
+        meta.encode(&mut file).expect("write metadata");
 
         file.seek(SeekFrom::Start(DATA_SPOT as u64))
             .expect("seek to start");
-        file.write_all(bincode::serialize(&data).unwrap().as_slice())
-            .expect("write data");
+        data.encode(&mut file).expect("write data");
 
         let mut data = vec![0u8; 11];
         let _ = ring_buffer.pop(&mut data).unwrap();
@@ -708,23 +704,22 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes());
+        let data = Data::new(Version::V1, data.as_bytes().to_vec());
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
-        file.write_all(bincode::serialize(&meta).unwrap().as_slice())
-            .expect("write metadata");
+        meta.encode(&mut file).expect("write metadata");
 
         file.seek(SeekFrom::Start(DATA_SPOT1 as u64))
             .expect("seek to start");
-        let data = bincode::serialize(&data).unwrap();
-        let data = data.as_slice();
-        file.write_all(&data[..(1024 - DATA_SPOT1) as usize])
+        let mut buf = vec![0; 1024];
+        data.encode(&mut buf).unwrap();
+        file.write_all(&buf[..(1024 - DATA_SPOT1) as usize])
             .expect("write data");
 
         file.seek(SeekFrom::Start(DATA_SPOT2 as u64))
             .expect("seek to start");
-        file.write_all(&data[(1024 - DATA_SPOT1) as usize..])
+        file.write_all(&buf[(1024 - DATA_SPOT1) as usize..])
             .expect("write data");
 
         let mut data = vec![0u8; 11];
@@ -759,13 +754,17 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes());
+        let data = Data::new(Version::V1, data.as_bytes().to_vec());
 
         let mut buf = vec![0u8; 1024];
-        meta.encode(&mut buf[..Metadata::size(Version::V1) as usize])
-            .unwrap();
-        data.encode(&mut buf[Metadata::size(Version::V1) as usize..])
-            .unwrap();
+        meta.encode(&mut Cursor::new(
+            &mut buf[..Metadata::size(Version::V1) as usize],
+        ))
+        .unwrap();
+        data.encode(&mut Cursor::new(
+            &mut buf[Metadata::size(Version::V1) as usize..],
+        ))
+        .unwrap();
         file.write_all(&buf).expect("write");
 
         let mut data = vec![0u8; 11];
@@ -793,13 +792,17 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes());
+        let data = Data::new(Version::V1, data.as_bytes().to_vec());
 
         let mut buf = vec![0u8; 1024];
-        meta.encode(&mut buf[..Metadata::size(Version::V1) as usize])
-            .unwrap();
-        data.encode(&mut buf[Metadata::size(Version::V1) as usize..])
-            .unwrap();
+        meta.encode(&mut Cursor::new(
+            &mut buf[..Metadata::size(Version::V1) as usize],
+        ))
+        .unwrap();
+        data.encode(&mut Cursor::new(
+            &mut buf[Metadata::size(Version::V1) as usize..],
+        ))
+        .unwrap();
         file.write_all(&buf).expect("write");
 
         let mut data = vec![0u8; 11];
@@ -816,7 +819,7 @@ mod tests {
 
         let data = vec![0u8; 1024_usize + 1];
         assert_matches!(
-            ring_buffer.push(&data),
+            ring_buffer.push(data),
             Err(Error::EntryLargerThanBuffer(_, _))
         );
     }
@@ -835,7 +838,7 @@ mod tests {
             .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
 
         let data = vec![0u8; 40];
-        assert_matches!(ring_buffer.push(&data), Err(Error::EntryTooBig(_, _)));
+        assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig(_, _)));
     }
 
     #[test]
@@ -857,7 +860,7 @@ mod tests {
             .fetch_add(READ_WRAP as u64, Ordering::Acquire);
 
         let data = vec![0u8; 40];
-        assert_matches!(ring_buffer.push(&data), Err(Error::EntryTooBig(_, _)));
+        assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig(_, _)));
     }
 
     #[test]
@@ -879,7 +882,7 @@ mod tests {
             .store(READ_WRAP as u64, Ordering::Release);
         ring_buffer.inner().has_data.store(true, Ordering::Release);
 
-        let data = "hello world 19".as_bytes();
+        let data = "hello world 19".as_bytes().to_vec();
         assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig(_, _)));
     }
 
@@ -891,7 +894,7 @@ mod tests {
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         let data = "abcdefghijklmnopqrstuvwxyz".as_bytes().to_vec();
-        ring_buffer.push(&data).unwrap();
+        ring_buffer.push(data).unwrap();
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -902,9 +905,10 @@ mod tests {
         let mut data = vec![0u8; 256]; // Large enough buf to be sure we got everything
         let _ = file.read(&mut data).unwrap();
 
-        let Metadata::Version1(meta) =
-            bincode::deserialize::<Metadata>(&data[..Metadata::size(Version::V1) as usize])
-                .unwrap();
+        let Metadata::Version1(meta) = Metadata::decode(&mut Cursor::new(
+            &data[..Metadata::size(Version::V1) as usize],
+        ))
+        .unwrap();
         meta.verify().unwrap();
         assert_eq!(meta.read_ptr, 0);
         assert_eq!(meta.write_ptr, 86);
@@ -913,7 +917,7 @@ mod tests {
 
         let start = Metadata::size(Version::V1) as usize;
         let end = Metadata::Version1(meta).data_size() as usize + start;
-        let Data::Version1(data) = bincode::deserialize::<Data>(&data[start..end]).unwrap();
+        let Data::Version1(data) = Data::decode(&mut Cursor::new(&mut data[start..end])).unwrap();
         data.verify().unwrap();
         assert_eq!(data.data, b"abcdefghijklmnopqrstuvwxyz");
     }
@@ -963,7 +967,7 @@ mod tests {
                 let data = format!("hello world {}", i);
 
                 loop {
-                    match ring_buffer.push(data.as_bytes()) {
+                    match ring_buffer.push(data.as_bytes().to_vec()) {
                         Ok(_) => {
                             break;
                         }

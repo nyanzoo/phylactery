@@ -1,9 +1,11 @@
-use std::mem::size_of;
-
-use crate::{
-    buffer::Buffer,
-    codec::{self, Decode, Encode},
+use std::{
+    io::{Read, Write},
+    mem::size_of,
 };
+
+use necronomicon::{Decode, Encode};
+
+use crate::buffer::Buffer;
 
 pub mod v1;
 
@@ -11,15 +13,42 @@ pub mod error;
 pub use error::Error;
 
 /// The version for encoding and decoding metadata and data.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub enum Version {
     V1,
 }
 
-#[derive(
-    Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
-)]
+impl<W> Encode<W> for Version
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::V1 => 1u8.encode(writer),
+        }
+    }
+}
+
+impl<R> Decode<R> for Version
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        match u8::decode(reader)? {
+            1 => Ok(Self::V1),
+            _ => Err(necronomicon::Error::Decode(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid version",
+            ))),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(C)]
 pub enum Metadata {
     Version1(v1::Metadata),
@@ -99,28 +128,44 @@ impl Metadata {
     }
 }
 
-impl Decode<'_> for Metadata {
-    fn decode(buf: &[u8]) -> Result<Self, codec::Error> {
-        Ok(bincode::deserialize(buf)?)
+impl<R> Decode<R> for Metadata
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        let version = Version::decode(reader)?;
+        match version {
+            Version::V1 => Ok(Self::Version1(v1::Metadata::decode(reader)?)),
+        }
     }
 }
 
-impl Encode for Metadata {
-    fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
-        bincode::serialize_into(buf, self)?;
+impl<W> Encode<W> for Metadata
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::Version1(metadata) => {
+                Version::V1.encode(writer)?;
+                metadata.encode(writer)?;
+            }
+        }
         Ok(())
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
-pub enum Data<'a> {
-    #[serde(borrow)]
-    Version1(v1::Data<'a>),
+pub enum Data {
+    Version1(v1::Data),
 }
 
-impl<'a> Data<'a> {
-    pub fn new(version: Version, data: &'a [u8]) -> Self {
+impl Data {
+    pub fn new(version: Version, data: Vec<u8>) -> Self {
         match version {
             Version::V1 => Self::Version1(v1::Data::new(data)),
         }
@@ -132,19 +177,19 @@ impl<'a> Data<'a> {
         }
     }
 
-    pub fn into_inner(self) -> &'a [u8] {
+    pub fn into_inner(self) -> Vec<u8> {
         match self {
             Self::Version1(data) => data.data,
         }
     }
 
-    pub const fn size(&self) -> u32 {
+    pub fn size(&self) -> u32 {
         match self {
             Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
         }
     }
 
-    pub fn split_at(&self, idx: usize) -> (&'a [u8], &'a [u8]) {
+    pub fn split_at<'a>(&'a self, idx: usize) -> (&'a [u8], &'a [u8]) {
         match self {
             Self::Version1(data) => data.data.split_at(idx),
         }
@@ -161,68 +206,32 @@ impl<'a> Data<'a> {
             Self::Version1(data) => data.crc,
         }
     }
+}
 
-    pub fn as_mut(self) -> DataMut<'a> {
-        match self {
-            Data::Version1(data) => DataMut::Version1(data.as_mut()),
+impl<R> Decode<R> for Data
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error> {
+        let version = Version::decode(reader)?;
+        match version {
+            Version::V1 => Ok(Self::Version1(v1::Data::decode(reader)?)),
         }
     }
 }
 
-impl<'a> Decode<'a> for Data<'a> {
-    fn decode(buf: &'a [u8]) -> Result<Self, codec::Error> {
-        Ok(bincode::deserialize(buf)?)
-    }
-}
-
-impl Encode for Data<'_> {
-    fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
-        bincode::serialize_into(buf, self)?;
+impl<W> Encode<W> for Data
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::Version1(data) => {
+                Version::V1.encode(writer)?;
+                data.encode(writer)?;
+            }
+        }
         Ok(())
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-#[repr(C)]
-pub enum DataMut<'a> {
-    Version1(v1::DataMut<'a>),
-}
-
-impl<'a> DataMut<'a> {
-    pub fn copy_into(self, buf: &mut [u8]) {
-        match self {
-            Self::Version1(data) => data.copy_into(buf),
-        }
-    }
-
-    pub const fn size(&self) -> u32 {
-        match self {
-            Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
-        }
-    }
-
-    pub fn verify(&self) -> Result<(), Error> {
-        match self {
-            Self::Version1(data) => data.verify(),
-        }
-    }
-
-    pub fn crc(&self) -> u32 {
-        match self {
-            Self::Version1(data) => data.crc,
-        }
-    }
-
-    pub fn update(&mut self, update_fn: impl FnOnce(&mut [u8])) {
-        match self {
-            Self::Version1(inner) => inner.update(update_fn),
-        }
-    }
-
-    pub fn as_ref(self) -> Data<'a> {
-        match self {
-            Self::Version1(data) => Data::Version1(data.as_ref()),
-        }
     }
 }
 
@@ -293,7 +302,9 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::codec::{Decode, Encode};
+    use std::io::Cursor;
+
+    use necronomicon::{Decode, Encode};
 
     use super::{v1, Data, Metadata, Version};
 
@@ -308,12 +319,12 @@ mod tests {
     fn test_data_write() {
         // create a Data instance to write
         let data = Data::Version1(v1::Data {
-            data: "kittens".as_bytes(),
+            data: "kittens".as_bytes().to_vec(),
             crc: 1234,
         });
 
         // create a buffer to write the data to
-        let mut buf = [0u8; 1024];
+        let mut buf = vec![0u8; 1024];
 
         // write the data to the buffer
         let result = data.encode(&mut buf);
@@ -322,7 +333,7 @@ mod tests {
         assert!(result.is_ok());
 
         // verify that if deserialized, the data is the same
-        let result = Data::decode(&buf);
+        let result = Data::decode(&mut Cursor::new(&mut buf));
         assert!(result.is_ok());
         let deserialized = result.unwrap();
         assert_eq!(data, deserialized);

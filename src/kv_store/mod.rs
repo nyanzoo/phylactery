@@ -1,9 +1,15 @@
-use std::{collections::BTreeMap, mem::size_of, path::Path};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+    mem::size_of,
+    path::Path,
+};
+
+use necronomicon::{kv_store_codec::Key, Decode, Encode};
 
 use crate::{
     alloc::{Entry, FixedSizeAllocator},
     buffer::MmapBuffer,
-    codec::{self, Decode, Encode},
     dequeue::{Dequeue, Push},
     entry::{Data, Version},
     ring_buffer::{self},
@@ -16,22 +22,12 @@ use graveyard::{Tombstone, TOMBSTONE_SIZE};
 mod error;
 pub use error::Error;
 
-type Key = [u8; 32];
-
-pub fn key(key: &[u8]) -> Key {
-    let mut k = [0; 32];
-    let len = std::cmp::min(key.len(), 32);
-    k[..len].copy_from_slice(&key[..len]);
-    k
-}
-
 #[derive(Debug, Eq, PartialEq)]
-pub enum Lookup<'a> {
+pub enum Lookup {
     Absent,
-    Found(Data<'a>),
+    Found(Data),
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
 pub enum MetaState {
     // We need to compact and cannot accept new metadata in this slot
     Compacting,
@@ -39,7 +35,37 @@ pub enum MetaState {
     Full,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+impl<W> Encode<W> for MetaState
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::Compacting => 0u8.encode(writer),
+            Self::Full => 1u8.encode(writer),
+        }
+    }
+}
+
+impl<R> Decode<R> for MetaState
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        match u8::decode(reader)? {
+            0 => Ok(Self::Compacting),
+            1 => Ok(Self::Full),
+            _ => Err(necronomicon::Error::Decode(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid meta state",
+            ))),
+        }
+    }
+}
+
 struct Metadata {
     crc: u32,
     file: u64,
@@ -63,18 +89,43 @@ impl Into<Tombstone> for Metadata {
 
 const METADATA_SIZE: usize = size_of::<Metadata>();
 
-impl Decode<'_> for Metadata {
-    fn decode(buf: &[u8]) -> Result<Self, codec::Error>
-    where
-        Self: Sized,
-    {
-        bincode::deserialize(buf).map_err(codec::Error::from)
+impl<W> Encode<W> for Metadata
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.crc.encode(writer)?;
+        self.file.encode(writer)?;
+        self.offset.encode(writer)?;
+        self.len.encode(writer)?;
+        self.key.encode(writer)?;
+        self.state.encode(writer)?;
+        Ok(())
     }
 }
 
-impl Encode for Metadata {
-    fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
-        bincode::serialize_into(buf, self).map_err(codec::Error::from)
+impl<R> Decode<R> for Metadata
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        let crc = u32::decode(reader)?;
+        let file = u64::decode(reader)?;
+        let offset = u64::decode(reader)?;
+        let len = u64::decode(reader)?;
+        let key = Key::decode(reader)?;
+        let state = MetaState::decode(reader)?;
+        Ok(Metadata {
+            crc,
+            file,
+            offset,
+            len,
+            key,
+            state,
+        })
     }
 }
 
@@ -128,7 +179,7 @@ where
         })
     }
 
-    pub fn delete(&mut self, key: &[u8]) -> Result<(), Error> {
+    pub fn delete(&mut self, key: &Key) -> Result<(), Error> {
         if let Some(mut entry) = self.lookup.remove(key) {
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone.
@@ -151,7 +202,7 @@ where
             let tombstone: Tombstone = meta.into();
             let mut buf = vec![0; TOMBSTONE_SIZE];
             tombstone.encode(&mut buf)?;
-            self.pusher.push(&buf)?;
+            self.pusher.push(buf)?;
         }
 
         Ok(())
@@ -191,10 +242,7 @@ where
     ///
     /// # Errors
     /// See [`Error`].
-    pub fn get<'a, 'b>(&'a mut self, key: &Key, buf: &'b mut [u8]) -> Result<Lookup, Error>
-    where
-        'b: 'a,
-    {
+    pub fn get(&mut self, key: &Key, buf: &mut Vec<u8>) -> Result<Lookup, Error> {
         if let Some(entry) = self.lookup.get(key) {
             let meta = entry.data::<Metadata>()?;
 
@@ -263,7 +311,7 @@ where
             let tombstone: Tombstone = meta.into();
             let mut buf = vec![0; TOMBSTONE_SIZE];
             tombstone.encode(&mut buf)?;
-            self.pusher.push(&buf)?;
+            self.pusher.push(buf)?;
         }
 
         // Dequeue needs to also return the offset and file of the data.
@@ -298,10 +346,12 @@ where
 mod test {
     use std::io::Write;
 
+    use necronomicon::kv_store_codec::Key;
+
     use crate::{
         buffer::MmapBuffer,
         entry::Version,
-        kv_store::{key, Graveyard, Lookup},
+        kv_store::{Graveyard, Lookup},
         ring_buffer::ring_buffer,
     };
 
@@ -396,6 +446,13 @@ mod test {
         assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
     }
 
+    fn key(key: &[u8]) -> Key {
+        let mut buf = [0; 32];
+        buf[..key.len()].copy_from_slice(key);
+        Key::from(buf)
+    }
+
+    #[allow(dead_code)]
     fn tree(path: &std::path::Path) {
         std::io::stdout()
             .write_all(
@@ -408,6 +465,7 @@ mod test {
             .unwrap();
     }
 
+    #[allow(dead_code)]
     fn hexyl(path: &std::path::Path) {
         std::io::stdout()
             .write_all(

@@ -1,6 +1,6 @@
-use std::cell::UnsafeCell;
+use std::{cell::UnsafeCell, io::Cursor};
 
-use crate::codec::{Decode, Encode};
+use necronomicon::{Decode, Encode};
 
 use super::{Buffer, Error};
 
@@ -26,19 +26,21 @@ impl InMemBuffer {
 impl Buffer for InMemBuffer {
     fn decode_at<'a, T>(&'a self, off: usize, len: usize) -> Result<T, Error>
     where
-        T: Decode<'a>,
+        T: Decode<Cursor<&'a [u8]>>,
     {
-        let shared = unsafe { &*self.0.get() };
-        let res = T::decode(&shared[off..(off + len)])?;
+        let shared = unsafe { (*self.0.get()).as_mut_slice() };
+        let shared = &mut shared[off..(off + len)];
+        let res = T::decode(&mut Cursor::new(shared))?;
         Ok(res)
     }
 
-    fn encode_at<T>(&self, off: usize, len: usize, data: &T) -> Result<(), Error>
+    fn encode_at<'a, T>(&'a self, off: usize, len: usize, data: &T) -> Result<(), Error>
     where
-        T: Encode,
+        T: Encode<Cursor<&'a mut [u8]>>,
     {
         let exclusive = unsafe { &mut *self.0.get() };
-        data.encode(&mut exclusive[off..(off + len)])?;
+        let exclusive = &mut exclusive[off..(off + len)];
+        data.encode(&mut Cursor::new(exclusive))?;
         Ok(())
     }
 

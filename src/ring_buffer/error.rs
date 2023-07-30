@@ -2,9 +2,6 @@ use crate::buffer;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("bincode err: {0}")]
-    Bincode(#[from] bincode::Error),
-
     #[error("buffer empty")]
     BufferEmpty,
 
@@ -13,9 +10,6 @@ pub enum Error {
 
     #[error("buffer too small: {0} < {1}")]
     BufferTooSmall(u32, u32),
-
-    #[error("codec err: {0}")]
-    Codec(#[from] crate::codec::Error),
 
     #[error("empty data")]
     EmptyData,
@@ -34,4 +28,7 @@ pub enum Error {
 
     #[error("unerlying io err: {0}")]
     IO(#[from] std::io::Error),
+
+    #[error("necronomicon error: {0}")]
+    Necronomicon(#[from] necronomicon::Error),
 }
