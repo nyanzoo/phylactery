@@ -142,7 +142,7 @@ where
         let has_data = self.has_data.load(Ordering::Acquire);
 
         let len = buf.len() as u32;
-        let entry_size = Metadata::size(self.version) as u64
+        let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, len) as u64;
         let data = Writable::new(self.version, buf);
         let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
@@ -183,6 +183,10 @@ where
         // Also need to check if data would wrap and would be too big
         let next_write_ptr = write_ptr + entry_size;
         let pass = write_ptr <= read_ptr && next_write_ptr >= read_ptr;
+
+        let pass = write_ptr <= read_ptr
+            && next_write_ptr < self.buffer.capacity()
+            && next_write_ptr > read_ptr;
 
         let pass_around = write_ptr >= read_ptr
             && next_write_ptr > self.buffer.capacity()
@@ -427,19 +431,22 @@ where
         let next = self.start;
 
         // wrap around means we have read everything
-        if self.start + Metadata::size(self.version) as u64 > self.buffer.capacity() {
+        if self.start + Metadata::struct_size(self.version) as u64 > self.buffer.capacity() {
             self.start = 0;
         }
 
         let metadata = self
             .buffer
-            .decode_at::<Metadata>(self.start as usize, Metadata::size(self.version) as usize)
+            .decode_at::<Metadata>(
+                self.start as usize,
+                Metadata::struct_size(self.version) as usize,
+            )
             .expect("failed to decode metadata");
 
         // If the metadata CRC does not match, we can't read.
         metadata.verify().expect("corrupted metadata");
 
-        self.start += Metadata::size(self.version) as u64;
+        self.start += Metadata::struct_size(self.version) as u64;
 
         // handle wrap around case
         self.start += metadata.data_size() as u64;
@@ -691,11 +698,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::size(Version::V1) as usize],
+            &mut buf[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::size(Version::V1) as usize..],
+            &mut buf[Metadata::struct_size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -827,7 +834,7 @@ mod tests {
 
         file.seek(SeekFrom::Start(DATA_SPOT1 as u64))
             .expect("seek to start");
-        let mut buf = vec![0; 1024];
+        let mut buf = vec![];
         data.encode(&mut buf).unwrap();
         file.write_all(&buf[..(1024 - DATA_SPOT1) as usize])
             .expect("write data");
@@ -875,11 +882,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::size(Version::V1) as usize],
+            &mut buf[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::size(Version::V1) as usize..],
+            &mut buf[Metadata::struct_size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -915,11 +922,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::size(Version::V1) as usize],
+            &mut buf[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::size(Version::V1) as usize..],
+            &mut buf[Metadata::struct_size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -1027,12 +1034,12 @@ mod tests {
         let _ = file.read(&mut data).unwrap();
 
         let Metadata::Version1(meta) = Metadata::decode(&mut Cursor::new(
-            &data[..Metadata::size(Version::V1) as usize],
+            &data[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         meta.verify().unwrap();
         assert_eq!(meta.read_ptr(), 0);
-        assert_eq!(meta.write_ptr(), 76);
+        assert_eq!(meta.write_ptr(), 70);
         assert_eq!(meta.entry(), 1);
         assert_eq!(meta.size(), 26);
 
@@ -1059,7 +1066,7 @@ mod tests {
 
         // fill buffer
         let mut i = 0;
-        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes().to_vec()) {
             i += 1;
         }
 
@@ -1079,7 +1086,7 @@ mod tests {
         }
 
         // fill buffer again
-        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes().to_vec()) {
             i += 1;
         }
 

@@ -152,6 +152,8 @@ mod test {
             panic!("key not found");
         };
 
+        tree(&path);
+
         assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
         assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
     }

@@ -55,9 +55,7 @@ where
         let mut metas = vec![];
         while (off as u64 + Metadata::struct_size(version) as u64) < buffer.capacity() {
             // read the metadata.
-            if let Ok(metadata) =
-                buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize)
-            {
+            if let Ok(metadata) = buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize) {
                 metas.push(metadata);
 
                 // increment the offset by the size of the metadata.
@@ -110,11 +108,11 @@ mod tests {
         });
 
         // create a buffer to write the data to
-        let mut buf = vec![0u8; 1024];
+        let mut buf = vec![];
 
         // write the data to the buffer
         let result = data.encode(&mut buf);
-
+        
         // ensure that the write operation succeeded
         assert!(result.is_ok());
 
