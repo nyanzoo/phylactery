@@ -200,7 +200,7 @@ where
 
             // needs to be tombstone!
             let tombstone: Tombstone = meta.into();
-            let mut buf = vec![0; TOMBSTONE_SIZE];
+            let mut buf = vec![];
             tombstone.encode(&mut buf)?;
             self.pusher.push(buf)?;
         }
@@ -309,7 +309,7 @@ where
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone.
             let tombstone: Tombstone = meta.into();
-            let mut buf = vec![0; TOMBSTONE_SIZE];
+            let mut buf = vec![];
             tombstone.encode(&mut buf)?;
             self.pusher.push(buf)?;
         }
@@ -441,6 +441,8 @@ mod test {
         else {
             panic!("key not found");
         };
+
+        tree(&path);
 
         assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
         assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));

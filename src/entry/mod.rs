@@ -185,12 +185,9 @@ impl Data {
         }
     }
 
-    pub fn size(&self) -> u32 {
+    pub fn struct_size(&self) -> u32 {
         match self {
-            Self::Version1(data) => match data {
-                v1::Data::Read(data) => data.data,
-                v1::Data::Write(_) => panic!("cannot get inner data from write data"),
-            },
+            Self::Version1(data) => VERSION_SIZE as u32 + data.struct_size(),
         }
     }
 
@@ -290,9 +287,7 @@ where
         let mut metas = vec![];
         while (off as u64 + Metadata::struct_size(version) as u64) < buffer.capacity() {
             // read the metadata.
-            if let Ok(metadata) =
-                buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize)
-            {
+            if let Ok(metadata) = buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize) {
                 metas.push(metadata);
 
                 // increment the offset by the size of the metadata.
@@ -341,14 +336,14 @@ mod tests {
         });
 
         // create a buffer to write the data to
-        let mut buf = vec![0u8; 1024];
+        let mut buf = vec![];
 
         // write the data to the buffer
         let result = data.encode(&mut buf);
-
+        
         // ensure that the write operation succeeded
         assert!(result.is_ok());
-
+        
         // verify that if deserialized, the data is the same
         let result = Data::decode(&mut Cursor::new(&mut buf));
         assert!(result.is_ok());
