@@ -11,17 +11,17 @@ use super::Error;
 #[repr(C)]
 pub struct Metadata {
     // The mask for the entry. (not used in crc)
-    pub mask: u32,
+    mask: u32,
     // This is used for scanning efficiently and finding most recent entry.
-    pub entry: u64,
+    entry: u64,
     // The read ptr when written.
-    pub read_ptr: u64,
+    read_ptr: u64,
     // The write ptr when written.
-    pub write_ptr: u64,
+    write_ptr: u64,
     // The size of the data.
-    pub size: u32,
+    size: u32,
     // The crc of all the metadata.
-    pub crc: u32,
+    crc: u32,
 }
 
 impl<W> Encode<W> for Metadata
@@ -63,13 +63,14 @@ where
 
 impl PartialOrd for Metadata {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.entry.partial_cmp(&other.entry)
+        self.entry.partial_cmp(&other.entry())
     }
 }
 
 impl Ord for Metadata {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.entry.cmp(&other.entry)
+        let other = other.entry();
+        self.entry.cmp(&other)
     }
 }
 
@@ -86,13 +87,42 @@ impl Metadata {
         }
     }
 
-    pub fn calculate_data_size(size: u32) -> u32 {
-        // 8 for len of data + 4 for crc + data size
-        8 + size + 4
+    pub const fn mask(&self) -> u32 {
+        self.mask
     }
 
-    pub const fn size() -> u32 {
-        size_of::<Self>() as u32
+    pub fn entry(&self) -> u64 {
+        self.entry
+    }
+
+    pub fn read_ptr(&self) -> u64 {
+        self.read_ptr
+    }
+
+    pub fn write_ptr(&self) -> u64 {
+        self.write_ptr
+    }
+
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    pub fn crc(&self) -> u32 {
+        self.crc
+    }
+
+    #[cfg(test)]
+    pub fn set_crc(&mut self, crc: u32) {
+        self.crc = crc;
+    }
+
+    pub fn calculate_data_size(size: u32) -> u32 {
+        // 2 for len of data + 4 for crc + data size
+        2 + size + 4
+    }
+
+    pub const fn struct_size() -> u32 {
+        36
     }
 
     pub fn verify(&self) -> Result<(), Error> {
@@ -104,10 +134,6 @@ impl Metadata {
             });
         }
         Ok(())
-    }
-
-    pub const fn mask(&self) -> u32 {
-        self.mask
     }
 
     fn generate_crc(entry: u64, read_ptr: u64, write_ptr: u64, size: u32) -> u32 {
@@ -171,8 +197,8 @@ impl Data {
         buf[..len].copy_from_slice(&self.data[..len]);
     }
 
-    pub fn size(&self) -> u32 {
-        8 + self.data.len() as u32 + size_of::<u32>() as u32
+    pub fn struct_size(&self) -> u32 {
+        2 + self.data.len() as u32 + size_of::<u32>() as u32
     }
 
     pub fn verify(&self) -> Result<(), Error> {
@@ -200,8 +226,6 @@ mod tests {
 
     #[test]
     fn test_metadata_size() {
-        // 8 bytes for the enum variant
-        // rest from actual struct
-        assert_eq!(Metadata::size(), 40);
+        assert_eq!(Metadata::struct_size(), 36);
     }
 }

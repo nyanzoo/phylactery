@@ -100,7 +100,7 @@ where
         }
 
         let start = read_ptr as usize;
-        let len = Metadata::size(self.version) as usize;
+        let len = Metadata::struct_size(self.version) as usize;
         let metadata: Metadata = self.buffer.decode_at(start, len)?;
         metadata.verify()?;
 
@@ -141,7 +141,7 @@ where
         let entry = self.entry.load(Ordering::Acquire) + 1;
 
         let data = Data::new(self.version, buf.to_vec());
-        let entry_size = Metadata::size(self.version) as u64
+        let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, buf.len() as u32) as u64;
         let metadata = Metadata::new(
             self.version,
@@ -169,11 +169,11 @@ where
         // write the metadata.
         self.buffer.encode_at(
             write_ptr as usize,
-            Metadata::size(self.version) as usize,
+            Metadata::struct_size(self.version) as usize,
             &metadata,
         )?;
 
-        write_ptr += Metadata::size(self.version) as u64;
+        write_ptr += Metadata::struct_size(self.version) as u64;
 
         // write the data.
         self.buffer
@@ -225,7 +225,7 @@ mod test {
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
         assert_eq!(node.read.load(std::sync::atomic::Ordering::Acquire), 0);
-        assert_eq!(node.write.load(std::sync::atomic::Ordering::Acquire), 71);
+        assert_eq!(node.write.load(std::sync::atomic::Ordering::Acquire), 55);
         assert_eq!(node.entry.load(std::sync::atomic::Ordering::Acquire), 1);
         assert!(node.has_data.load(std::sync::atomic::Ordering::Acquire));
     }
@@ -245,7 +245,7 @@ mod test {
 
     #[test]
     fn test_push_node_full() {
-        let buffer = InMemBuffer::new(128);
+        let buffer = InMemBuffer::new(64);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
         node.push(b"hello world").unwrap();
@@ -259,7 +259,7 @@ mod test {
 
         assert_matches!(
             node.push(&[0u8; 129]),
-            Err(Error::EntryLargerThanNode(189, 128))
+            Err(Error::EntryLargerThanNode(173, 128))
         );
     }
 

@@ -133,7 +133,7 @@ where
         let has_data = self.has_data.load(Ordering::Acquire);
 
         let len = buf.len() as u32;
-        let entry_size = Metadata::size(self.version) as u64
+        let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, len) as u64;
         let data = Data::new(self.version, buf);
         let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
@@ -148,7 +148,7 @@ where
 
         // check if metadata can fit without wrapping
         let mut has_wrapped = false;
-        if write_ptr + Metadata::size(self.version) as u64 > self.buffer.capacity() {
+        if write_ptr + Metadata::struct_size(self.version) as u64 > self.buffer.capacity() {
             write_ptr = 0;
             has_wrapped = true;
         }
@@ -171,11 +171,11 @@ where
         // Also need to check if data would wrap and would be too big
         let next_write_ptr = write_ptr + entry_size;
 
-        let pass = write_ptr < read_ptr
+        let pass = write_ptr <= read_ptr
             && next_write_ptr < self.buffer.capacity()
             && next_write_ptr > read_ptr;
 
-        let pass_around = write_ptr > read_ptr
+        let pass_around = write_ptr >= read_ptr
             && next_write_ptr > self.buffer.capacity()
             && next_write_ptr % self.buffer.capacity() > read_ptr;
 
@@ -191,11 +191,11 @@ where
         // write metadata
         self.buffer.encode_at(
             write_ptr as usize,
-            Metadata::size(self.version) as usize,
+            Metadata::struct_size(self.version) as usize,
             &metadata,
         )?;
 
-        write_ptr += Metadata::size(self.version) as u64;
+        write_ptr += Metadata::struct_size(self.version) as u64;
 
         // write data
         if write_ptr + metadata.data_size() as u64 > self.buffer.capacity() {
@@ -252,13 +252,14 @@ where
         }
 
         // handle wrap around case
-        if read_ptr + Metadata::size(self.version) as u64 > self.buffer.capacity() {
+        if read_ptr + Metadata::struct_size(self.version) as u64 > self.buffer.capacity() {
             read_ptr = 0;
         }
 
-        let metadata = self
-            .buffer
-            .decode_at::<Metadata>(read_ptr as usize, Metadata::size(self.version) as usize)?;
+        let metadata = self.buffer.decode_at::<Metadata>(
+            read_ptr as usize,
+            Metadata::struct_size(self.version) as usize,
+        )?;
 
         // If the metadata CRC does not match, we can't read.
         metadata.verify()?;
@@ -271,7 +272,7 @@ where
             ));
         }
 
-        read_ptr += Metadata::size(self.version) as u64;
+        read_ptr += Metadata::struct_size(self.version) as u64;
 
         // handle wrap around case
         if read_ptr + metadata.data_size() as u64 > self.buffer.capacity() {
@@ -313,13 +314,14 @@ where
                 } else {
                     4
                 };
+
                 self.buffer.read_at(&mut crc[..split], read_ptr as usize)?;
                 self.buffer.read_at(&mut crc[split..], 0)?;
             }
 
             // TODO(rojang): it seems bincode uses little endian for u32, but we should
             // make sure this is the case always?
-            let crc = u32::from_le_bytes(crc);
+            let crc = u32::from_be_bytes(crc);
             crc_check(crc, &buf[..metadata.real_data_size() as usize])?;
 
             read_ptr += 4;
@@ -365,19 +367,22 @@ where
         let next = self.start;
 
         // wrap around means we have read everything
-        if self.start + Metadata::size(self.version) as u64 > self.buffer.capacity() {
+        if self.start + Metadata::struct_size(self.version) as u64 > self.buffer.capacity() {
             self.start = 0;
         }
 
         let metadata = self
             .buffer
-            .decode_at::<Metadata>(self.start as usize, Metadata::size(self.version) as usize)
+            .decode_at::<Metadata>(
+                self.start as usize,
+                Metadata::struct_size(self.version) as usize,
+            )
             .expect("failed to decode metadata");
 
         // If the metadata CRC does not match, we can't read.
         metadata.verify().expect("corrupted metadata");
 
-        self.start += Metadata::size(self.version) as u64;
+        self.start += Metadata::struct_size(self.version) as u64;
 
         // handle wrap around case
         self.start += metadata.data_size() as u64;
@@ -530,7 +535,7 @@ mod tests {
         let mut meta = Metadata::new(Version::V1, 1, 4, 10, 10);
         match &mut meta {
             Metadata::Version1(meta) => {
-                meta.crc = 1234567;
+                meta.set_crc(1234567);
             }
         }
 
@@ -582,11 +587,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::size(Version::V1) as usize],
+            &mut buf[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::size(Version::V1) as usize..],
+            &mut buf[Metadata::struct_size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -634,8 +639,8 @@ mod tests {
 
     #[test]
     fn test_pop_wrap_around_data() {
-        const METADATA_SPOT: u32 = 1024 - Metadata::size(Version::V1);
-        const DATA_SPOT: u32 = METADATA_SPOT + Metadata::size(Version::V1) - 1024;
+        const METADATA_SPOT: u32 = 1024 - Metadata::struct_size(Version::V1);
+        const DATA_SPOT: u32 = METADATA_SPOT + Metadata::struct_size(Version::V1) - 1024;
 
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
@@ -677,8 +682,8 @@ mod tests {
 
     #[test]
     fn test_pop_wrap_around_data_partial() {
-        const METADATA_SPOT: u32 = 1024 - Metadata::size(Version::V1) - 5;
-        const DATA_SPOT1: u32 = METADATA_SPOT + Metadata::size(Version::V1);
+        const METADATA_SPOT: u32 = 1024 - Metadata::struct_size(Version::V1) - 5;
+        const DATA_SPOT1: u32 = METADATA_SPOT + Metadata::struct_size(Version::V1);
         const DATA_SPOT2: u32 = (DATA_SPOT1 + 5) % 1024;
 
         let file = tempfile::tempdir().unwrap();
@@ -712,7 +717,7 @@ mod tests {
 
         file.seek(SeekFrom::Start(DATA_SPOT1 as u64))
             .expect("seek to start");
-        let mut buf = vec![0; 1024];
+        let mut buf = vec![];
         data.encode(&mut buf).unwrap();
         file.write_all(&buf[..(1024 - DATA_SPOT1) as usize])
             .expect("write data");
@@ -729,7 +734,7 @@ mod tests {
 
     #[test]
     fn test_pop_wrap_around_metadata() {
-        const METADATA_SPOT: u32 = 1024 - (Metadata::size(Version::V1) / 2);
+        const METADATA_SPOT: u32 = 1024 - (Metadata::struct_size(Version::V1) / 2);
 
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
@@ -758,11 +763,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::size(Version::V1) as usize],
+            &mut buf[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::size(Version::V1) as usize..],
+            &mut buf[Metadata::struct_size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -796,11 +801,11 @@ mod tests {
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
-            &mut buf[..Metadata::size(Version::V1) as usize],
+            &mut buf[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         data.encode(&mut Cursor::new(
-            &mut buf[Metadata::size(Version::V1) as usize..],
+            &mut buf[Metadata::struct_size(Version::V1) as usize..],
         ))
         .unwrap();
         file.write_all(&buf).expect("write");
@@ -826,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_push_entry_too_big_due_to_metadata_wrap() {
-        const METADATA_SPOT: u32 = 1024 - (Metadata::size(Version::V1) / 2);
+        const METADATA_SPOT: u32 = 1024 - (Metadata::struct_size(Version::V1) / 2);
 
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
@@ -843,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_push_entry_too_big_due_for_remaining_space() {
-        const METADATA_SPOT: u32 = 1024 - (Metadata::size(Version::V1) / 2);
+        const METADATA_SPOT: u32 = 1024 - (Metadata::struct_size(Version::V1) / 2);
         const READ_WRAP: u32 = 10;
 
         let file = tempfile::tempdir().unwrap();
@@ -906,20 +911,56 @@ mod tests {
         let _ = file.read(&mut data).unwrap();
 
         let Metadata::Version1(meta) = Metadata::decode(&mut Cursor::new(
-            &data[..Metadata::size(Version::V1) as usize],
+            &data[..Metadata::struct_size(Version::V1) as usize],
         ))
         .unwrap();
         meta.verify().unwrap();
-        assert_eq!(meta.read_ptr, 0);
-        assert_eq!(meta.write_ptr, 86);
-        assert_eq!(meta.entry, 1);
-        assert_eq!(meta.size, 26);
+        assert_eq!(meta.read_ptr(), 0);
+        assert_eq!(meta.write_ptr(), 70);
+        assert_eq!(meta.entry(), 1);
+        assert_eq!(meta.size(), 26);
 
-        let start = Metadata::size(Version::V1) as usize;
+        let start = Metadata::struct_size(Version::V1) as usize;
         let end = Metadata::Version1(meta).data_size() as usize + start;
         let Data::Version1(data) = Data::decode(&mut Cursor::new(&mut data[start..end])).unwrap();
         data.verify().unwrap();
         assert_eq!(data.data, b"abcdefghijklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn test_fill() {
+        let file = tempfile::tempdir().unwrap();
+        let file = file.path().join("test");
+        let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
+
+        // fill buffer
+        let mut i = 0;
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes().to_vec()) {
+            i += 1;
+        }
+
+        let mut reads = vec![];
+        let mut buf = vec![0u8; 20];
+        // read half
+        while let Ok(_) = ring_buffer.pop(&mut buf) {
+            reads.push(String::from_utf8(buf.clone()).unwrap());
+        }
+
+        // fill buffer again
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes().to_vec()) {
+            i += 1;
+        }
+
+        // read all
+        while let Ok(_) = ring_buffer.pop(&mut buf) {
+            reads.push(String::from_utf8(buf.clone()).unwrap());
+        }
+
+        assert_eq!(reads.len(), i);
+        for i in 0..reads.len() {
+            assert_eq!(reads[i].trim_matches(char::from(0)), format!("hello {i}"));
+        }
     }
 
     #[test]
@@ -941,6 +982,7 @@ mod tests {
                             let num = split[2].parse::<u32>().unwrap();
                             let s = split[0].to_string() + " " + split[1];
                             reads.push((num, s));
+                            println!("read: {} now {}", num, reads.len());
                             if reads.len() == 100 {
                                 break;
                             }
@@ -980,6 +1022,8 @@ mod tests {
                         }
                     }
                 }
+
+                println!("wrote {}", i);
             }
         });
 

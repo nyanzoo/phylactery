@@ -12,6 +12,8 @@ pub mod v1;
 pub mod error;
 pub use error::Error;
 
+const VERSION_SIZE: usize = size_of::<u8>();
+
 /// The version for encoding and decoding metadata and data.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -67,27 +69,27 @@ impl Metadata {
         }
     }
 
-    pub const fn size(version: Version) -> u32 {
+    pub const fn struct_size(version: Version) -> u32 {
         match version {
-            Version::V1 => size_of::<Version>() as u32 + v1::Metadata::size(),
+            Version::V1 => VERSION_SIZE as u32 + v1::Metadata::struct_size(),
         }
     }
 
     pub fn read_ptr(&self) -> u64 {
         match self {
-            Self::Version1(metadata) => metadata.read_ptr,
+            Self::Version1(metadata) => metadata.read_ptr(),
         }
     }
 
     pub fn write_ptr(&self) -> u64 {
         match self {
-            Self::Version1(metadata) => metadata.write_ptr,
+            Self::Version1(metadata) => metadata.write_ptr(),
         }
     }
 
     pub fn entry(&self) -> u64 {
         match self {
-            Self::Version1(metadata) => metadata.entry,
+            Self::Version1(metadata) => metadata.entry(),
         }
     }
 
@@ -95,19 +97,19 @@ impl Metadata {
         let inner = match version {
             Version::V1 => v1::Metadata::calculate_data_size(size),
         };
-        inner + size_of::<Version>() as u32
+        inner + VERSION_SIZE as u32
     }
 
     pub fn data_size(&self) -> u32 {
         match self {
-            // 8 for len of data + 4 for crc + size of version + data size
-            Self::Version1(metadata) => Self::calculate_data_size(Version::V1, metadata.size),
+            // 2 for len of data + 4 for crc + size of version + data size
+            Self::Version1(metadata) => Self::calculate_data_size(Version::V1, metadata.size()),
         }
     }
 
     pub fn real_data_size(&self) -> u32 {
         match self {
-            Self::Version1(metadata) => metadata.size,
+            Self::Version1(metadata) => metadata.size(),
         }
     }
 
@@ -183,9 +185,9 @@ impl Data {
         }
     }
 
-    pub fn size(&self) -> u32 {
+    pub fn struct_size(&self) -> u32 {
         match self {
-            Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
+            Self::Version1(data) => VERSION_SIZE as u32 + data.struct_size(),
         }
     }
 
@@ -252,39 +254,40 @@ where
 {
     let mut off = 0;
     let has_data = loop {
-        let mut header = [0u8; 4];
+        let mut header = [0u8; 5];
         buffer.read_at(&mut header, off)?;
         // TODO: should be little endian?
-        // D5EED5BA
+        // BAD5EED5
         match header {
-            // [0x0, 0x0, 0x0, 0x0] => break false,
-            [0xd5, 0xee, 0xd5, 0xba] => break true,
-            [_, 0xd5, 0xee, 0xd5] => off += 1,
-            [_, _, 0xd5, 0xee] => off += 2,
-            [_, _, _, 0xd5] => off += 3,
-            _ => off += 4,
+            [_, 0xba, 0xd5, 0xee, 0xd5] => break true,
+            [_, _, 0xba, 0xd5, 0xee] => off += 2,
+            [_, _, _, 0xba, 0xd5] => off += 3,
+            [_, _, _, _, 0xba] => off += 4,
+            _ => off += 5,
         }
 
-        if off as u64 >= buffer.capacity() {
+        if off as u64 + 5 >= buffer.capacity() {
             break false;
         }
     };
 
     if has_data {
-        // rollback 4 bytes to get start of entry.
-        off -= 4;
+        // rollback 5 bytes to get start of entry.
+        // off -= 5;
 
         let mut metas = vec![];
-        while (off as u64 + Metadata::size(version) as u64) < buffer.capacity() {
+        while (off as u64 + Metadata::struct_size(version) as u64) < buffer.capacity() {
             // read the metadata.
-            let metadata: Metadata = buffer.decode_at(off, Metadata::size(version) as usize)?;
+            if let Ok(metadata) = buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize) {
+                metas.push(metadata);
 
-            metas.push(metadata);
-
-            // increment the offset by the size of the metadata.
-            off += Metadata::size(version) as usize;
-            // increment the offset by the size of the data.
-            off += metadata.data_size() as usize;
+                // increment the offset by the size of the metadata.
+                off += Metadata::struct_size(version) as usize;
+                // increment the offset by the size of the data.
+                off += metadata.data_size() as usize;
+            } else {
+                break;
+            }
         }
 
         // The last entry is the one with the highest entry value.
@@ -310,9 +313,9 @@ mod tests {
 
     #[test]
     fn test_metadata_size() {
-        // 8 bytes for the enum variant
+        // 1 bytes for the enum variant
         // rest from actual struct
-        assert_eq!(Metadata::size(Version::V1), 44);
+        assert_eq!(Metadata::struct_size(Version::V1), 37);
     }
 
     #[test]
@@ -324,14 +327,14 @@ mod tests {
         });
 
         // create a buffer to write the data to
-        let mut buf = vec![0u8; 1024];
+        let mut buf = vec![];
 
         // write the data to the buffer
         let result = data.encode(&mut buf);
-
+        
         // ensure that the write operation succeeded
         assert!(result.is_ok());
-
+        
         // verify that if deserialized, the data is the same
         let result = Data::decode(&mut Cursor::new(&mut buf));
         assert!(result.is_ok());

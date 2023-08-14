@@ -128,7 +128,7 @@ impl Graveyard {
     }
 
     fn collect(&self) -> Vec<Vec<Tombstone>> {
-        let len = size_of::<Tombstone>();
+        let len = 28;
 
         let mut nodes = vec![];
         let mut node = 0;
