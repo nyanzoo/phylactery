@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use necronomicon::{Decode,Encode};
+use necronomicon::{Decode, Encode};
 
 mod error;
 pub use error::Error;

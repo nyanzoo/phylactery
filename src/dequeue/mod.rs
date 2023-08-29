@@ -315,6 +315,7 @@ where
         let meta = Metadata::decode(&mut Cursor::new(&mut meta_buf))?;
         meta.verify()?;
 
+        buf.resize(meta.data_size() as usize, 0);
         file.read_at(buf, offset + Metadata::struct_size(version) as u64)?;
         let data = Data::decode(&mut Cursor::new(buf))?;
 

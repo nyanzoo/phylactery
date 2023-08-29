@@ -21,6 +21,17 @@ pub enum Version {
     V1,
 }
 
+impl TryFrom<u8> for Version {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::V1),
+            _ => Err(Error::InvalidVersion(value)),
+        }
+    }
+}
+
 impl<W> Encode<W> for Version
 where
     W: Write,
@@ -287,7 +298,9 @@ where
         let mut metas = vec![];
         while (off as u64 + Metadata::struct_size(version) as u64) < buffer.capacity() {
             // read the metadata.
-            if let Ok(metadata) = buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize) {
+            if let Ok(metadata) =
+                buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize)
+            {
                 metas.push(metadata);
 
                 // increment the offset by the size of the metadata.
@@ -340,10 +353,10 @@ mod tests {
 
         // write the data to the buffer
         let result = data.encode(&mut buf);
-        
+
         // ensure that the write operation succeeded
         assert!(result.is_ok());
-        
+
         // verify that if deserialized, the data is the same
         let result = Data::decode(&mut Cursor::new(&mut buf));
         assert!(result.is_ok());

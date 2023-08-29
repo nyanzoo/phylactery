@@ -9,10 +9,7 @@ pub enum Error {
     Necronomicon(#[from] necronomicon::Error),
 
     #[error("out of memory {used}/{total}")]
-    OutOfMemory {
-        total: u64,
-        used: usize,
-    },
+    OutOfMemory { total: u64, used: usize },
 
     #[error("bad node {0}")]
     BadNode(usize),
