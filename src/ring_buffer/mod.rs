@@ -46,6 +46,10 @@ where
         self.0.pop(buf)
     }
 
+    pub fn peek(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.0.peek(buf)
+    }
+
     #[cfg(test)]
     fn inner(&self) -> &Inner<B> {
         &self.0
@@ -457,6 +461,10 @@ where
     pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
         self.0.pop(buf)
     }
+
+    pub fn peek(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.0.peek(buf)
+    }
 }
 
 pub fn ring_buffer<B>(buffer: B, version: Version) -> Result<(Pusher<B>, Popper<B>), Error>
@@ -647,7 +655,7 @@ mod tests {
         let buffer = InMemBuffer::new(1024);
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        ring_buffer.push("kittens".as_bytes()).unwrap();
+        ring_buffer.push("kittens".as_bytes().to_vec()).unwrap();
 
         let mut data = vec![0u8; 7];
         let result = ring_buffer.peek(&mut data).unwrap();
