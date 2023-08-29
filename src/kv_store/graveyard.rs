@@ -1,6 +1,5 @@
 use std::{
     io::{Cursor, Read, Write},
-    mem::size_of,
     path::PathBuf,
     time::Duration,
 };
@@ -11,8 +10,6 @@ use crate::{
     buffer::{InMemBuffer, MmapBuffer},
     ring_buffer,
 };
-
-pub(crate) const TOMBSTONE_SIZE: usize = size_of::<Tombstone>();
 
 #[derive(Debug)]
 pub(crate) struct Tombstone {

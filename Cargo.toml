@@ -25,5 +25,18 @@ necronomicon = { path = "../necronomicon" }
 
 [dev-dependencies]
 coverage-helper = "0"
+criterion = "0.5"
 matches = "0"
 tempfile = "3"
+
+[[bench]]
+name = "ring_buffer"
+harness = false
+
+# [[bench]]
+# name = "dequeue"
+# harness = false
+
+# [[bench]]
+# name = "kv_store"
+# harness = false
