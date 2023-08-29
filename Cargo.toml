@@ -27,6 +27,7 @@ necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "deve
 
 [dev-dependencies]
 coverage-helper = "0"
+criterion = "0.5"
 matches = "0"
 tempfile = "3"
 test-case = "3"
@@ -39,10 +40,10 @@ necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "deve
 name = "ring_buffer"
 harness = false
 
-[[bench]]
-name = "dequeue"
-harness = false
+# [[bench]]
+# name = "dequeue"
+# harness = false
 
-[[bench]]
-name = "kv_store"
-harness = false
+# [[bench]]
+# name = "kv_store"
+# harness = false

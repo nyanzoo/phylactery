@@ -6,7 +6,7 @@ pub mod config;
 
 mod graveyard;
 pub use graveyard::Graveyard;
-use graveyard::{Tombstone, TOMBSTONE_SIZE};
+use graveyard::Tombstone;
 
 mod metadata;
 

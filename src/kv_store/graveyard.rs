@@ -1,6 +1,5 @@
 use std::{
     io::{Cursor, Read, Write},
-    mem::size_of,
     path::PathBuf,
     time::Duration,
 };
