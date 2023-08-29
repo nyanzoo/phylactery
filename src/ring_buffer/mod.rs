@@ -46,6 +46,10 @@ where
         self.0.pop(buf)
     }
 
+    pub fn peek(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.0.peek(buf)
+    }
+
     #[cfg(test)]
     fn inner(&self) -> &Inner<B> {
         &self.0
@@ -239,6 +243,34 @@ where
     /// # Errors
     /// See [`Error`] for more details.
     pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.peek_or_pop(buf, false)
+    }
+
+    // TODO(nyanzebra): This could ignore version and try all of them.
+    /// # Description
+    /// Peeks an entry from the ring buffer.
+    /// Note that it is possible to get duplicates if the ring buffer is reconstructed from
+    /// a persisted [`Buffer`].
+    ///
+    /// # Example
+    /// ```rust, ignore
+    /// let mut data = [0u8; 1024];
+    /// let data_size = ring_buffer.peek(&mut data)?;
+    /// ```
+    ///
+    /// # Parameters
+    /// - `buf`: The data buffer to write the entry into.
+    ///
+    /// # Returns
+    /// Result with size of data read as Ok variant, or an Error.
+    ///
+    /// # Errors
+    /// See [`Error`] for more details.
+    pub fn peek(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.peek_or_pop(buf, true)
+    }
+
+    fn peek_or_pop(&self, buf: &mut [u8], peek: bool) -> Result<usize, Error> {
         let mut read_ptr = self.read_ptr.load(Ordering::Acquire);
         let write_ptr = self.write_ptr.load(Ordering::Acquire);
         let has_data = self.has_data.load(Ordering::Acquire);
@@ -332,10 +364,11 @@ where
         }
 
         read_ptr %= self.buffer.capacity();
-        self.read_ptr.store(read_ptr, Ordering::Release);
-        self.has_data
-            .store(read_ptr != write_ptr, Ordering::Release);
-
+        if !peek {
+            self.read_ptr.store(read_ptr, Ordering::Release);
+            self.has_data
+                .store(read_ptr != write_ptr, Ordering::Release);
+        }
         Ok(metadata.real_data_size() as usize)
     }
 }
@@ -422,6 +455,10 @@ where
     pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
         self.0.pop(buf)
     }
+
+    pub fn peek(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.0.peek(buf)
+    }
 }
 
 pub fn ring_buffer<B>(buffer: B, version: Version) -> Result<(Pusher<B>, Popper<B>), Error>
@@ -505,6 +542,32 @@ mod tests {
             ring_buffer2.inner().entry.load(Ordering::Acquire),
             expected_entry
         );
+    }
+
+    #[test]
+    fn test_peek_buffer() {
+        let buffer = InMemBuffer::new(1024);
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
+
+        ring_buffer.push("kittens".as_bytes().to_vec()).unwrap();
+
+        let mut data = vec![0u8; 7];
+        let result = ring_buffer.peek(&mut data).unwrap();
+        assert_eq!(result, 7);
+        assert_eq!(data.as_slice(), b"kittens");
+
+        let mut data = vec![0u8; 7];
+        let result = ring_buffer.peek(&mut data).unwrap();
+        assert_eq!(result, 7);
+        assert_eq!(data.as_slice(), b"kittens");
+
+        let mut data = vec![0u8; 7];
+        let result = ring_buffer.pop(&mut data).unwrap();
+        assert_eq!(result, 7);
+        assert_eq!(data.as_slice(), b"kittens");
+
+        let mut data = vec![0u8; 7];
+        assert!(ring_buffer.peek(&mut data).is_err());
     }
 
     #[test]
