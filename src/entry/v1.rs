@@ -117,8 +117,8 @@ impl Metadata {
     }
 
     pub fn calculate_data_size(size: u32) -> u32 {
-        // 2 for len of data + 4 for crc + data size
-        2 + size + 4
+        // 8 for len of data + 4 for crc + data size
+        8 + size + 4
     }
 
     pub const fn struct_size() -> u32 {

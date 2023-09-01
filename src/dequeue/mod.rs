@@ -108,7 +108,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Pop {
     Popped,
     WaitForFlush,

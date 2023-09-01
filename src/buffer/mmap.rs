@@ -66,7 +66,7 @@ impl Buffer for MmapBuffer {
         let end = off + len;
         let exclusive = unsafe { &mut *self.0.get() };
         exclusive[start..end].copy_from_slice(&buf[..(end - start)]);
-        exclusive.flush_async_range(start, len)?;
+        exclusive.flush_range(start, len)?;
         Ok(len as u64)
     }
 

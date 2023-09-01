@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use phylactery::{
     buffer::{InMemBuffer, MmapBuffer},
@@ -6,58 +6,57 @@ use phylactery::{
     ring_buffer::{Popper, Pusher, RingBuffer},
 };
 
-pub fn in_mem_push_pop(c: &mut Criterion) {
-    let mut group = c.benchmark_group("ringbuffer");
-    group.bench_function("in_mem_push_pop", |b| {
-        let rb = RingBuffer::new(InMemBuffer::new(1024), Version::V1)
-            .expect("failed to create ring buffer");
-
-        let pusher = Pusher::new(rb.clone());
-        let popper = Popper::new(rb);
-
-        let data = b"hello world".to_vec();
-        let mut buf = vec![0; 1024];
-
-        b.iter(|| {
-            _ = pusher.push(data.clone()).expect("failed to push");
-
-            let bytes = popper.pop(&mut buf).expect("failed to pop");
-            assert_eq!(bytes, data.len());
-            assert_eq!(&buf[..bytes], data);
-        })
-    });
-    group.finish();
-}
-
 pub fn push_pop(c: &mut Criterion) {
     let mut group = c.benchmark_group("RingBuffer Push/Pop");
-    
-    group.bench_function("in_mem_push_pop", |b| {
-        let path = tempfile::tempdir().expect("failed to create temp dir");
-        let path = path.path().join("ringbuffer");
 
-        let rb = RingBuffer::new(
-            MmapBuffer::new(path, 1024).expect("mmap buffer"),
-            Version::V1,
-        )
+    let path = tempfile::tempdir().expect("failed to create temp dir");
+    let path = path.path().join("ringbuffer");
+
+    let rb_mmap = RingBuffer::new(
+        MmapBuffer::new(path, 1024 * 1024).expect("mmap buffer"),
+        Version::V1,
+    )
+    .expect("failed to create ring buffer");
+
+    let rb_in_mem = RingBuffer::new(InMemBuffer::new(1024 * 1024), Version::V1)
         .expect("failed to create ring buffer");
 
-        let pusher = Pusher::new(rb.clone());
-        let popper = Popper::new(rb);
+    for i in (1u32..=16).into_iter().map(|i| 2u64.pow(i)) {
+        group.bench_with_input(BenchmarkId::new("in mem", i), &i, |b, i| {
+            let pusher = Pusher::new(rb_in_mem.clone());
+            let popper = Popper::new(rb_in_mem.clone());
 
-        let data = b"hello world".to_vec();
-        let mut buf = vec![0; 1024];
+            let data = vec![7; *i as usize];
+            let mut buf = [0; 2u64.pow(17) as usize];
 
-        b.iter(|| {
-            _ = pusher.push(data.clone()).expect("failed to push");
+            b.iter(|| {
+                _ = pusher.push(data.clone()).expect("failed to push");
 
-            let bytes = popper.pop(&mut buf).expect("failed to pop");
-            assert_eq!(bytes, data.len());
-            assert_eq!(&buf[..bytes], data);
-        })
-    });
+                let bytes = popper.pop(&mut buf).expect("failed to pop");
+                assert_eq!(bytes, data.len());
+                assert_eq!(&buf[..bytes], data);
+            });
+        });
+
+        group.bench_with_input(BenchmarkId::new("mmap", i), &i, |b, i| {
+            let pusher = Pusher::new(rb_mmap.clone());
+            let popper = Popper::new(rb_mmap.clone());
+
+            let data = vec![7; *i as usize];
+            let mut buf = [0; 2u64.pow(17) as usize];
+
+            b.iter(|| {
+                _ = pusher.push(data.clone()).expect("failed to push");
+
+                let bytes = popper.pop(&mut buf).expect("failed to pop");
+                assert_eq!(bytes, data.len());
+                assert_eq!(&buf[..bytes], data);
+            });
+        });
+    }
+
     group.finish();
 }
 
-criterion_group!(ringbuffer, in_mem_push_pop, mmap_push_pop);
+criterion_group!(ringbuffer, push_pop);
 criterion_main!(ringbuffer);
