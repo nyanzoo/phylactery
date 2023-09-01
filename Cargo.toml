@@ -33,10 +33,10 @@ tempfile = "3"
 name = "ring_buffer"
 harness = false
 
-# [[bench]]
-# name = "dequeue"
-# harness = false
+[[bench]]
+name = "dequeue"
+harness = false
 
-# [[bench]]
-# name = "kv_store"
-# harness = false
+[[bench]]
+name = "kv_store"
+harness = false

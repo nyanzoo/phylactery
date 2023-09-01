@@ -175,10 +175,6 @@ where
         let next_write_ptr = write_ptr + entry_size;
         let pass = write_ptr <= read_ptr && next_write_ptr >= read_ptr;
 
-        let pass = write_ptr <= read_ptr
-            && next_write_ptr < self.buffer.capacity()
-            && next_write_ptr > read_ptr;
-
         let pass_around = write_ptr >= read_ptr
             && next_write_ptr > self.buffer.capacity()
             && next_write_ptr % self.buffer.capacity() > read_ptr;
@@ -1079,7 +1075,7 @@ mod tests {
         .unwrap();
         meta.verify().unwrap();
         assert_eq!(meta.read_ptr(), 0);
-        assert_eq!(meta.write_ptr(), 70);
+        assert_eq!(meta.write_ptr(), 76);
         assert_eq!(meta.entry(), 1);
         assert_eq!(meta.size(), 26);
 
