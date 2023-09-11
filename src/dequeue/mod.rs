@@ -54,6 +54,9 @@ where
                     .file_name()
                     .to_str()
                     .expect("valid file name string")
+                    .split_once('.')
+                    .expect("remove .bin")
+                    .0
                     .parse::<u64>()
                     .expect("valid file name")
             } else {
