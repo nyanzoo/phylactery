@@ -25,7 +25,6 @@ pub fn push_pop(c: &mut Criterion) {
             b.iter(|| {
                 _ = pusher.push(&data).expect("failed to push");
                 pusher.flush().expect("failed to flush");
-                
 
                 assert_eq!(Pop::Popped, popper.pop(&mut buf).expect("failed to pop"));
             });
