@@ -21,6 +21,14 @@ pub enum Version {
     V1,
 }
 
+impl Into<u8> for Version {
+    fn into(self) -> u8 {
+        match self {
+            Self::V1 => 1,
+        }
+    }
+}
+
 impl TryFrom<u8> for Version {
     type Error = Error;
 
@@ -173,12 +181,12 @@ where
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
-pub enum Data {
-    Version1(v1::Data),
+pub enum Data<'a> {
+    Version1(v1::Data<'a>),
 }
 
-impl Data {
-    pub fn new(version: Version, data: Vec<u8>) -> Self {
+impl<'a> Data<'a> {
+    pub fn new(version: Version, data: &'a [u8]) -> Self {
         match version {
             Version::V1 => Self::Version1(v1::Data::write(data)),
         }
@@ -192,7 +200,10 @@ impl Data {
 
     pub fn into_inner(self) -> Vec<u8> {
         match self {
-            Self::Version1(data) => data.data,
+            Self::Version1(data) => match data {
+                v1::Data::Read(data) => data.data,
+                v1::Data::Write(_) => panic!("cannot get inner data from write data"),
+            },
         }
     }
 
@@ -202,13 +213,7 @@ impl Data {
         }
     }
 
-    pub fn split_at<'a>(&'a self, idx: usize) -> (&'a [u8], &'a [u8]) {
-        match self {
-            Self::Version1(data) => VERSION_SIZE as u32 + data.struct_size(),
-        }
-    }
-
-    pub fn split_at(&self, idx: usize) -> (&[u8], &[u8]) {
+    pub fn split_at<'b>(&'b self, idx: usize) -> (&'b [u8], &'b [u8]) {
         match self {
             Self::Version1(data) => match data {
                 v1::Data::Read(data) => data.data.split_at(idx),
@@ -225,12 +230,12 @@ impl Data {
 
     pub fn crc(&self) -> u32 {
         match self {
-            Self::Version1(data) => data.crc,
+            Self::Version1(data) => data.crc(),
         }
     }
 }
 
-impl<R> Decode<R> for Data
+impl<R> Decode<R> for Data<'_>
 where
     R: Read,
 {
@@ -242,7 +247,7 @@ where
     }
 }
 
-impl<W> Encode<W> for Data
+impl<W> Encode<W> for Data<'_>
 where
     W: Write,
 {
@@ -343,10 +348,10 @@ mod tests {
     #[test]
     fn test_data_write() {
         // create a Data instance to write
-        let data = Data::Version1(v1::Data {
-            data: "kittens".as_bytes().to_vec(),
+        let data = Data::Version1(v1::Data::Write(v1::DataWrite {
+            data: "kittens".as_bytes(),
             crc: 1234,
-        });
+        }));
 
         // create a buffer to write the data to
         let mut buf = vec![];

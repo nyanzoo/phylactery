@@ -38,7 +38,7 @@ where
         Ok(Self(Arc::new(Inner::new(buffer, version)?)))
     }
 
-    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         self.0.push(buf)
     }
 
@@ -122,7 +122,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -135,7 +135,7 @@ where
         let len = buf.len() as u32;
         let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, len) as u64;
-        let data = Data::new(self.version, buf);
+        let data = Data::new(self.version, &buf);
         let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
 
         // If the entry is too big, we can't write.
@@ -437,7 +437,7 @@ where
         Self(buffer)
     }
 
-    pub fn push(&self, buf: Vec<u8>) -> Result<u64, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         self.0.push(buf)
     }
 }
@@ -587,7 +587,7 @@ mod tests {
 
     use crate::{
         buffer::{InMemBuffer, MmapBuffer},
-        entry::{self, Data, Metadata, Version},
+        entry::{self, v1, Data, Metadata, Version},
     };
 
     use super::{error::Error, RingBuffer};
@@ -602,7 +602,7 @@ mod tests {
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         for _ in 0..5 {
-            ring_buffer.push(b"kittens".to_vec()).expect("push");
+            ring_buffer.push(b"kittens").expect("push");
         }
 
         let mut buf = [0u8; 1024];
@@ -613,7 +613,7 @@ mod tests {
         }
 
         // We don't write the read ptr on reads, so to test we do another write.
-        ring_buffer.push(b"kittens".to_vec()).expect("push");
+        ring_buffer.push(b"kittens").expect("push");
 
         let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::Acquire);
         let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::Acquire);
@@ -736,7 +736,7 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let mut data = Data::new(Version::V1, data.as_bytes().to_vec());
+        let mut data = Data::new(Version::V1, data.as_bytes());
         match &mut data {
             Data::Version1(data) => match data {
                 entry::v1::Data::Read(_) => panic!("should be write data"),
@@ -786,7 +786,7 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes().to_vec());
+        let data = Data::new(Version::V1, data.as_bytes());
 
         meta.encode(&mut file).unwrap();
         data.encode(&mut file).unwrap();
@@ -824,7 +824,7 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes().to_vec());
+        let data = Data::new(Version::V1, data.as_bytes());
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
@@ -868,7 +868,7 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes().to_vec());
+        let data = Data::new(Version::V1, data.as_bytes());
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
@@ -918,7 +918,7 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes().to_vec());
+        let data = Data::new(Version::V1, data.as_bytes());
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
@@ -956,7 +956,7 @@ mod tests {
 
         let data = "hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data.as_bytes().to_vec());
+        let data = Data::new(Version::V1, data.as_bytes());
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
@@ -983,8 +983,8 @@ mod tests {
 
         let data = vec![0u8; 1024_usize + 1];
         assert_matches!(
-            ring_buffer.push(data),
-            Err(Error::EntryLargerThanBuffer(_, _))
+            ring_buffer.push(&data),
+            Err(Error::EntryLargerThanBuffer { .. })
         );
     }
 
@@ -1002,7 +1002,7 @@ mod tests {
             .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
 
         let data = vec![0u8; 40];
-        assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig(_, _)));
+        assert_matches!(ring_buffer.push(&data), Err(Error::EntryTooBig { .. }));
     }
 
     #[test]
@@ -1024,7 +1024,7 @@ mod tests {
             .fetch_add(READ_WRAP as u64, Ordering::Acquire);
 
         let data = vec![0u8; 40];
-        assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig(_, _)));
+        assert_matches!(ring_buffer.push(&data), Err(Error::EntryTooBig { .. }));
     }
 
     #[test]
@@ -1046,8 +1046,8 @@ mod tests {
             .store(READ_WRAP as u64, Ordering::Release);
         ring_buffer.inner().has_data.store(true, Ordering::Release);
 
-        let data = "hello world 19".as_bytes().to_vec();
-        assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig(_, _)));
+        let data = "hello world 19".as_bytes();
+        assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig { .. }));
     }
 
     #[test]
@@ -1057,7 +1057,7 @@ mod tests {
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        let data = "abcdefghijklmnopqrstuvwxyz".as_bytes().to_vec();
+        let data = "abcdefghijklmnopqrstuvwxyz".as_bytes();
         ring_buffer.push(data).unwrap();
 
         let mut file = OpenOptions::new()
@@ -1081,7 +1081,11 @@ mod tests {
 
         let start = Metadata::struct_size(Version::V1) as usize;
         let end = Metadata::Version1(meta).data_size() as usize + start;
-        let Data::Version1(data) = Data::decode(&mut Cursor::new(&mut data[start..end])).unwrap();
+        let Data::Version1(v1::Data::Read(data)) =
+            Data::decode(&mut Cursor::new(&mut data[start..end])).unwrap()
+        else {
+            panic!("should be read data");
+        };
         data.verify().unwrap();
         assert_eq!(data.data, b"abcdefghijklmnopqrstuvwxyz");
     }
@@ -1095,7 +1099,7 @@ mod tests {
 
         // fill buffer
         let mut i = 0;
-        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes().to_vec()) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
             i += 1;
         }
 
@@ -1107,7 +1111,7 @@ mod tests {
         }
 
         // fill buffer again
-        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes().to_vec()) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
             i += 1;
         }
 
@@ -1169,7 +1173,7 @@ mod tests {
                 let data = format!("hello world {}", i);
 
                 loop {
-                    match ring_buffer.push(data.as_bytes().to_vec()) {
+                    match ring_buffer.push(data.as_bytes()) {
                         Ok(_) => {
                             break;
                         }
