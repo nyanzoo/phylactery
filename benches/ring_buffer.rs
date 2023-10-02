@@ -30,7 +30,7 @@ pub fn push_pop(c: &mut Criterion) {
             let mut buf = [0; 2u64.pow(17) as usize];
 
             b.iter(|| {
-                _ = pusher.push(data.clone()).expect("failed to push");
+                _ = pusher.push(&data).expect("failed to push");
 
                 let bytes = popper.pop(&mut buf).expect("failed to pop");
                 assert_eq!(bytes, data.len());
@@ -46,7 +46,7 @@ pub fn push_pop(c: &mut Criterion) {
             let mut buf = [0; 2u64.pow(17) as usize];
 
             b.iter(|| {
-                _ = pusher.push(data.clone()).expect("failed to push");
+                _ = pusher.push(&data).expect("failed to push");
 
                 let bytes = popper.pop(&mut buf).expect("failed to pop");
                 assert_eq!(bytes, data.len());

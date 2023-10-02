@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     mem::size_of,
     path::Path,
+    vec,
 };
 
 use necronomicon::{kv_store_codec::Key, Decode, Encode};
@@ -23,9 +24,9 @@ mod error;
 pub use error::Error;
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum Lookup {
+pub enum Lookup<'a> {
     Absent,
-    Found(Data),
+    Found(Data<'a>),
 }
 
 pub enum MetaState {
@@ -129,6 +130,16 @@ where
     }
 }
 
+pub struct DeconstructIter(Vec<String>);
+
+impl Iterator for DeconstructIter {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.pop()
+    }
+}
+
 // We will need to have 2 layers:
 // 1. The key metadata layer that holds [crc, file, offset, key] for each key
 //    where the hash of the key is the index into the key metadata layer.
@@ -144,22 +155,32 @@ where
     // data files
     dequeue: Dequeue<S>,
     // graveyard pusher
-    pusher: ring_buffer::Pusher<MmapBuffer>,
+    graveyard_pusher: ring_buffer::Pusher<MmapBuffer>,
+
+    // directories for data and meta
+    data_path: String,
+    meta_path: String,
 }
 
 // The expectation is that this is single threaded.
 impl<S> KVStore<S>
 where
-    S: AsRef<str> + AsRef<Path>,
+    S: AsRef<str>,
 {
-    pub fn new(
-        meta_path: S,
+    pub fn new<P>(
+        meta_path: P,
         meta_size: u64,
         data_path: S,
         node_size: u64,
         version: Version,
         pusher: ring_buffer::Pusher<MmapBuffer>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+    {
+        let meta_path_saved = format!("{:?}", meta_path.as_ref());
+        let data_path_saved = data_path.as_ref().to_string();
+
         let meta = MmapBuffer::new(meta_path, meta_size)?;
         let mut meta = FixedSizeAllocator::new(meta)?;
         let dequeue = Dequeue::new(data_path, node_size, version)?;
@@ -175,8 +196,34 @@ where
             lookup,
             meta,
             dequeue,
-            pusher,
+            graveyard_pusher: pusher,
+
+            data_path: data_path_saved.to_owned(),
+            meta_path: meta_path_saved.to_owned(),
         })
+    }
+
+    pub fn deconstruct_iter(&self) -> DeconstructIter {
+        // Get all the files in the data directory
+        let mut files = std::fs::read_dir(&self.data_path)
+            .expect("failed to read data directory")
+            .map(|res| res.map(|e| format!("{:?}", e.path())))
+            .collect::<Result<Vec<_>, std::io::Error>>()
+            .expect("failed to read data directory");
+
+        files.push(self.meta_path.clone());
+
+        DeconstructIter(files)
+    }
+
+    pub fn reconstruct(&self, file: impl AsRef<str>, contents: &[u8]) {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(file.as_ref())
+            .expect("failed to open file");
+
+        file.write_all(contents).expect("failed to write file");
     }
 
     pub fn delete(&mut self, key: &Key) -> Result<(), Error> {
@@ -202,7 +249,7 @@ where
             let tombstone: Tombstone = meta.into();
             let mut buf = vec![];
             tombstone.encode(&mut buf)?;
-            self.pusher.push(buf)?;
+            self.graveyard_pusher.push(&buf)?;
         }
 
         Ok(())
@@ -311,7 +358,7 @@ where
             let tombstone: Tombstone = meta.into();
             let mut buf = vec![];
             tombstone.encode(&mut buf)?;
-            self.pusher.push(buf)?;
+            self.graveyard_pusher.push(&buf)?;
         }
 
         // Dequeue needs to also return the offset and file of the data.

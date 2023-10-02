@@ -17,11 +17,11 @@ pub enum Error {
     #[error("entry error: {0}")]
     Entry(#[from] crate::entry::error::Error),
 
-    #[error("entry too big: {0} > {1}")]
-    EntryTooBig(u64, u64),
+    #[error("entry too big: {entry_size} > {remaining}")]
+    EntryTooBig { entry_size: u64, remaining: u64 },
 
-    #[error("entry larger than total buffer: {0} > {1}")]
-    EntryLargerThanBuffer(u64, u64),
+    #[error("entry larger than total buffer: {entry_size} > {capacity}")]
+    EntryLargerThanBuffer { entry_size: u64, capacity: u64 },
 
     #[error("invalid buffer size: {0} must be >= {1} and a multiple of {1}")]
     InvalidBufferSize(u32, u32),

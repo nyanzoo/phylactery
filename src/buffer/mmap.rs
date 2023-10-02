@@ -9,7 +9,10 @@ use super::{Buffer, Error};
 pub struct MmapBuffer(UnsafeCell<MmapMut>);
 
 impl MmapBuffer {
-    pub fn new(path: impl AsRef<Path>, size: u64) -> std::io::Result<Self> {
+    pub fn new<P>(path: P, size: u64) -> std::io::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

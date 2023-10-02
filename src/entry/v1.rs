@@ -146,27 +146,28 @@ impl Metadata {
     }
 }
 
-#[derive(Clone, Debug, Eq)]
-#[repr(C)]
-pub struct Data {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataRead {
     // The data of the entry.
-    pub data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
     // The crc of the data.
-    pub crc: u32,
+    crc: u32,
 }
 
-impl<W> Encode<W> for Data
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.data.encode(writer)?;
-        self.crc.encode(writer)?;
+impl DataRead {
+    pub fn verify(&self) -> Result<(), Error> {
+        let crc = generate_crc(&self.data);
+        if crc != self.crc {
+            return Err(Error::DataCrcMismatch {
+                expected: self.crc,
+                actual: crc,
+            });
+        }
         Ok(())
     }
 }
 
-impl<R> Decode<R> for Data
+impl<R> Decode<R> for DataRead
 where
     R: Read,
 {
@@ -180,36 +181,91 @@ where
     }
 }
 
-impl PartialEq for Data {
-    fn eq(&self, other: &Self) -> bool {
-        self.crc == other.crc
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataWrite<'a> {
+    // The data of the entry.
+    pub(crate) data: &'a [u8],
+    // The crc of the data.
+    pub(crate) crc: u32,
+}
+
+impl<W> Encode<W> for DataWrite<'_>
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.data.encode(writer)?;
+        self.crc.encode(writer)?;
+        Ok(())
     }
 }
 
-impl Data {
-    pub fn new(data: Vec<u8>) -> Self {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Data<'a> {
+    Read(DataRead),
+    Write(DataWrite<'a>),
+}
+
+impl<W> Encode<W> for Data<'_>
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::Read(_) => panic!("cannot encode read data"),
+            Self::Write(data) => data.encode(writer),
+        }
+    }
+}
+
+impl<R> Decode<R> for Data<'_>
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        let data = DataRead::decode(reader)?;
+        Ok(Self::Read(data))
+    }
+}
+
+impl<'a> Data<'a> {
+    pub fn write(data: &'a [u8]) -> Self {
         let crc = generate_crc(&data);
-        Self { data, crc }
+        Self::Write(DataWrite { data, crc })
     }
 
     pub fn copy_into(self, buf: &mut [u8]) {
-        let len = std::cmp::min(buf.len(), self.data.len());
-        buf[..len].copy_from_slice(&self.data[..len]);
+        match self {
+            Self::Read(DataRead { data, .. }) => {
+                let len = std::cmp::min(buf.len(), data.len());
+                buf[..len].copy_from_slice(&data[..len]);
+            }
+            Self::Write(_) => panic!("cannot copy write data"),
+        }
+    }
+
+    pub fn crc(&self) -> u32 {
+        match self {
+            Self::Read(DataRead { crc, .. }) => *crc,
+            Self::Write(DataWrite { crc, .. }) => *crc,
+        }
     }
 
     pub fn struct_size(&self) -> u32 {
-        2 + self.data.len() as u32 + size_of::<u32>() as u32
+        match self {
+            Self::Read(DataRead { data, .. }) => 2 + data.len() as u32 + size_of::<u32>() as u32,
+            Self::Write(DataWrite { data, .. }) => 2 + data.len() as u32 + size_of::<u32>() as u32,
+        }
     }
 
     pub fn verify(&self) -> Result<(), Error> {
-        let crc = generate_crc(&self.data);
-        if crc != self.crc {
-            return Err(Error::DataCrcMismatch {
-                expected: self.crc,
-                actual: crc,
-            });
+        match self {
+            Self::Read(data) => data.verify(),
+            Self::Write(_) => Err(Error::NotReadData),
         }
-        Ok(())
     }
 }
 
