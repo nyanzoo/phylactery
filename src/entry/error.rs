@@ -17,4 +17,7 @@ pub enum Error {
 
     #[error("metadata crc mismatch: {expected} != {actual}")]
     MetadataCrcMismatch { expected: u32, actual: u32 },
+
+    #[error("not read data")]
+    NotReadData,
 }
