@@ -555,7 +555,7 @@ mod tests {
         let buffer = InMemBuffer::new(1024);
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        ring_buffer.push("kittens".as_bytes().to_vec()).unwrap();
+        ring_buffer.push("kittens".as_bytes()).unwrap();
 
         let mut data = vec![0u8; 7];
         let result = ring_buffer.peek(&mut data).unwrap();
