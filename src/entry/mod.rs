@@ -350,7 +350,7 @@ mod tests {
         // create a Data instance to write
         let data = Data::Version1(v1::Data::Write(v1::DataWrite {
             data: "kittens".as_bytes(),
-            crc: 1234,
+            crc: 2940700499,
         }));
 
         // create a buffer to write the data to
