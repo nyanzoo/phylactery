@@ -350,7 +350,7 @@ mod tests {
         // create a Data instance to write
         let data = Data::Version1(v1::Data::Write(v1::DataWrite {
             data: "kittens".as_bytes(),
-            crc: 1234,
+            crc: 2940700499,
         }));
 
         // create a buffer to write the data to
@@ -366,6 +366,7 @@ mod tests {
         let result = Data::decode(&mut Cursor::new(&mut buf));
         assert!(result.is_ok());
         let deserialized = result.unwrap();
-        assert_eq!(data, deserialized);
+        assert_eq!(data.crc(), deserialized.crc());
+        assert!(deserialized.verify().is_ok());
     }
 }

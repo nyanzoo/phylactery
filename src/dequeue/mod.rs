@@ -73,7 +73,7 @@ where
 
     pub(crate) fn next_read(&self) -> Result<File, Error> {
         let index = self.read_index.load(Ordering::Acquire);
-        let paths = format!("{:?}/{}.bin", self.dir.as_ref(), index);
+        let paths = format!("{}/{}.bin", self.dir.as_ref(), index);
         let path = Path::new(&paths);
         if path.exists() {
             let file = OpenOptions::new().read(true).open(path)?;
@@ -92,7 +92,7 @@ where
 
     pub(crate) fn next_write(&self) -> Result<File, Error> {
         let index = self.write_index.fetch_add(1, Ordering::AcqRel);
-        let path = format!("{:?}/{}.bin", self.dir.as_ref(), index);
+        let path = format!("{}/{}.bin", self.dir.as_ref(), index);
         let file = OpenOptions::new().append(true).create(true).open(path)?;
 
         Ok(File { file, index })
@@ -100,7 +100,7 @@ where
 
     pub fn init_write(&self, buffer: &mut InMemBuffer) -> Result<(), Error> {
         let index = self.write_index.load(Ordering::Acquire);
-        let path = format!("{:?}/{}.bin", self.dir.as_ref(), index);
+        let path = format!("{}/{}.bin", self.dir.as_ref(), index);
         let path = Path::new(&path);
         if path.exists() {
             let file = OpenOptions::new().read(true).open(path)?;
@@ -306,7 +306,7 @@ where
         let mut meta_buf = vec![0; Metadata::struct_size(version) as usize];
 
         let file = OpenOptions::new().read(true).open(format!(
-            "{:?}/{}.bin",
+            "{}/{}.bin",
             self.backing_generator.dir.as_ref(),
             file
         ))?;
