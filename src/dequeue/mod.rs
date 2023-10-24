@@ -296,11 +296,11 @@ where
         Ok(())
     }
 
-    pub(crate) fn get<'a>(
+    pub(crate) fn get(
         &self,
         file: u64,
         offset: u64,
-        buf: &'a mut Vec<u8>,
+        buf: &mut Vec<u8>,
         version: Version,
     ) -> Result<Data, Error> {
         let mut meta_buf = vec![0; Metadata::struct_size(version) as usize];

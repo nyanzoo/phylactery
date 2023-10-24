@@ -3,13 +3,6 @@ edition = "2021"
 name = "phylactery"
 version = "0.1.0"
 
-# We don't want to have silent failures
-[profile.release]
-panic = 'abort'
-
-[profile.dev]
-panic = 'abort'
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]

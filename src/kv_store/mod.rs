@@ -77,13 +77,13 @@ struct Metadata {
     state: MetaState,
 }
 
-impl Into<Tombstone> for Metadata {
-    fn into(self) -> Tombstone {
-        Tombstone {
-            crc: self.crc,
-            file: self.file,
-            offset: self.offset,
-            len: self.len,
+impl From<Metadata> for Tombstone {
+    fn from(val: Metadata) -> Self {
+        Self {
+            crc: val.crc,
+            file: val.file,
+            offset: val.offset,
+            len: val.len,
         }
     }
 }

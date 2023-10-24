@@ -63,7 +63,7 @@ where
 
 impl PartialOrd for Metadata {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.entry.partial_cmp(&other.entry())
+        Some(self.cmp(other))
     }
 }
 
@@ -233,7 +233,7 @@ where
 
 impl<'a> Data<'a> {
     pub fn write(data: &'a [u8]) -> Self {
-        let crc = generate_crc(&data);
+        let crc = generate_crc(data);
         Self::Write(DataWrite { data, crc })
     }
 

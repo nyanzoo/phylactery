@@ -1,5 +1,3 @@
-use thiserror;
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("buffer error {0}")]
