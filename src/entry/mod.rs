@@ -1,14 +1,18 @@
-use std::mem::size_of;
-
-use crate::{
-    buffer::Buffer,
-    codec::{self, Decode, Encode},
+use std::{
+    io::{Read, Write},
+    mem::size_of,
 };
+
+use necronomicon::{Decode, Encode};
+
+use crate::buffer::Buffer;
 
 pub mod v1;
 
 pub mod error;
 pub use error::Error;
+
+const VERSION_SIZE: usize = size_of::<u8>();
 
 /// The version for encoding and decoding metadata and data.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -17,9 +21,55 @@ pub enum Version {
     V1,
 }
 
-#[derive(
-    Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
-)]
+impl From<Version> for u8 {
+    fn from(val: Version) -> Self {
+        match val {
+            Version::V1 => 1,
+        }
+    }
+}
+
+impl TryFrom<u8> for Version {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::V1),
+            _ => Err(Error::InvalidVersion(value)),
+        }
+    }
+}
+
+impl<W> Encode<W> for Version
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::V1 => 1u8.encode(writer),
+        }
+    }
+}
+
+impl<R> Decode<R> for Version
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        match u8::decode(reader)? {
+            1 => Ok(Self::V1),
+            _ => Err(necronomicon::Error::Decode(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid version",
+            ))),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(C)]
 pub enum Metadata {
     Version1(v1::Metadata),
@@ -38,27 +88,27 @@ impl Metadata {
         }
     }
 
-    pub const fn size(version: Version) -> u32 {
+    pub const fn struct_size(version: Version) -> u32 {
         match version {
-            Version::V1 => size_of::<Version>() as u32 + v1::Metadata::size(),
+            Version::V1 => VERSION_SIZE as u32 + v1::Metadata::struct_size(),
         }
     }
 
     pub fn read_ptr(&self) -> u64 {
         match self {
-            Self::Version1(metadata) => metadata.read_ptr,
+            Self::Version1(metadata) => metadata.read_ptr(),
         }
     }
 
     pub fn write_ptr(&self) -> u64 {
         match self {
-            Self::Version1(metadata) => metadata.write_ptr,
+            Self::Version1(metadata) => metadata.write_ptr(),
         }
     }
 
     pub fn entry(&self) -> u64 {
         match self {
-            Self::Version1(metadata) => metadata.entry,
+            Self::Version1(metadata) => metadata.entry(),
         }
     }
 
@@ -66,19 +116,19 @@ impl Metadata {
         let inner = match version {
             Version::V1 => v1::Metadata::calculate_data_size(size),
         };
-        inner + size_of::<Version>() as u32
+        inner + VERSION_SIZE as u32
     }
 
     pub fn data_size(&self) -> u32 {
         match self {
-            // 8 for len of data + 4 for crc + size of version + data size
-            Self::Version1(metadata) => Self::calculate_data_size(Version::V1, metadata.size),
+            // 2 for len of data + 4 for crc + size of version + data size
+            Self::Version1(metadata) => Self::calculate_data_size(Version::V1, metadata.size()),
         }
     }
 
     pub fn real_data_size(&self) -> u32 {
         match self {
-            Self::Version1(metadata) => metadata.size,
+            Self::Version1(metadata) => metadata.size(),
         }
     }
 
@@ -99,30 +149,46 @@ impl Metadata {
     }
 }
 
-impl Decode<'_> for Metadata {
-    fn decode(buf: &[u8]) -> Result<Self, codec::Error> {
-        Ok(bincode::deserialize(buf)?)
+impl<R> Decode<R> for Metadata
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        let version = Version::decode(reader)?;
+        match version {
+            Version::V1 => Ok(Self::Version1(v1::Metadata::decode(reader)?)),
+        }
     }
 }
 
-impl Encode for Metadata {
-    fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
-        bincode::serialize_into(buf, self)?;
+impl<W> Encode<W> for Metadata
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::Version1(metadata) => {
+                Version::V1.encode(writer)?;
+                metadata.encode(writer)?;
+            }
+        }
         Ok(())
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub enum Data<'a> {
-    #[serde(borrow)]
     Version1(v1::Data<'a>),
 }
 
 impl<'a> Data<'a> {
     pub fn new(version: Version, data: &'a [u8]) -> Self {
         match version {
-            Version::V1 => Self::Version1(v1::Data::new(data)),
+            Version::V1 => Self::Version1(v1::Data::write(data)),
         }
     }
 
@@ -132,15 +198,27 @@ impl<'a> Data<'a> {
         }
     }
 
-    pub const fn size(&self) -> u32 {
+    pub fn into_inner(self) -> Vec<u8> {
         match self {
-            Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
+            Self::Version1(data) => match data {
+                v1::Data::Read(data) => data.data,
+                v1::Data::Write(_) => panic!("cannot get inner data from write data"),
+            },
         }
     }
 
-    pub fn split_at(&self, idx: usize) -> (&'a [u8], &'a [u8]) {
+    pub fn struct_size(&self) -> u32 {
         match self {
-            Self::Version1(data) => data.data.split_at(idx),
+            Self::Version1(data) => VERSION_SIZE as u32 + data.struct_size(),
+        }
+    }
+
+    pub fn split_at(&self, idx: usize) -> (&[u8], &[u8]) {
+        match self {
+            Self::Version1(data) => match data {
+                v1::Data::Read(data) => data.data.split_at(idx),
+                v1::Data::Write(_) => panic!("cannot split write data"),
+            },
         }
     }
 
@@ -149,17 +227,37 @@ impl<'a> Data<'a> {
             Self::Version1(data) => data.verify(),
         }
     }
-}
 
-impl<'a> Decode<'a> for Data<'a> {
-    fn decode(buf: &'a [u8]) -> Result<Self, codec::Error> {
-        Ok(bincode::deserialize(buf)?)
+    pub fn crc(&self) -> u32 {
+        match self {
+            Self::Version1(data) => data.crc(),
+        }
     }
 }
 
-impl Encode for Data<'_> {
-    fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
-        bincode::serialize_into(buf, self)?;
+impl<R> Decode<R> for Data<'_>
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error> {
+        let version = Version::decode(reader)?;
+        match version {
+            Version::V1 => Ok(Self::Version1(v1::Data::decode(reader)?)),
+        }
+    }
+}
+
+impl<W> Encode<W> for Data<'_>
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        match self {
+            Self::Version1(data) => {
+                Version::V1.encode(writer)?;
+                data.encode(writer)?;
+            }
+        }
         Ok(())
     }
 }
@@ -181,39 +279,42 @@ where
 {
     let mut off = 0;
     let has_data = loop {
-        let mut header = [0u8; 4];
+        let mut header = [0u8; 5];
         buffer.read_at(&mut header, off)?;
         // TODO: should be little endian?
-        // D5EED5BA
+        // BAD5EED5
         match header {
-            // [0x0, 0x0, 0x0, 0x0] => break false,
-            [0xd5, 0xee, 0xd5, 0xba] => break true,
-            [_, 0xd5, 0xee, 0xd5] => off += 1,
-            [_, _, 0xd5, 0xee] => off += 2,
-            [_, _, _, 0xd5] => off += 3,
-            _ => off += 4,
+            [_, 0xba, 0xd5, 0xee, 0xd5] => break true,
+            [_, _, 0xba, 0xd5, 0xee] => off += 2,
+            [_, _, _, 0xba, 0xd5] => off += 3,
+            [_, _, _, _, 0xba] => off += 4,
+            _ => off += 5,
         }
 
-        if off as u64 >= buffer.capacity() {
+        if off as u64 + 5 >= buffer.capacity() {
             break false;
         }
     };
 
     if has_data {
-        // rollback 4 bytes to get start of entry.
-        off -= 4;
+        // rollback 5 bytes to get start of entry.
+        // off -= 5;
 
         let mut metas = vec![];
-        while (off as u64 + Metadata::size(version) as u64) < buffer.capacity() {
+        while (off as u64 + Metadata::struct_size(version) as u64) < buffer.capacity() {
             // read the metadata.
-            let metadata: Metadata = buffer.decode_at(off, Metadata::size(version) as usize)?;
+            if let Ok(metadata) =
+                buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize)
+            {
+                metas.push(metadata);
 
-            metas.push(metadata);
-
-            // increment the offset by the size of the metadata.
-            off += Metadata::size(version) as usize;
-            // increment the offset by the size of the data.
-            off += metadata.data_size() as usize;
+                // increment the offset by the size of the metadata.
+                off += Metadata::struct_size(version) as usize;
+                // increment the offset by the size of the data.
+                off += metadata.data_size() as usize;
+            } else {
+                break;
+            }
         }
 
         // The last entry is the one with the highest entry value.
@@ -231,27 +332,29 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::codec::{Decode, Encode};
+    use std::io::Cursor;
+
+    use necronomicon::{Decode, Encode};
 
     use super::{v1, Data, Metadata, Version};
 
     #[test]
     fn test_metadata_size() {
-        // 8 bytes for the enum variant
+        // 1 bytes for the enum variant
         // rest from actual struct
-        assert_eq!(Metadata::size(Version::V1), 44);
+        assert_eq!(Metadata::struct_size(Version::V1), 37);
     }
 
     #[test]
     fn test_data_write() {
         // create a Data instance to write
-        let data = Data::Version1(v1::Data {
+        let data = Data::Version1(v1::Data::Write(v1::DataWrite {
             data: "kittens".as_bytes(),
-            crc: 1234,
-        });
+            crc: 2940700499,
+        }));
 
         // create a buffer to write the data to
-        let mut buf = [0u8; 1024];
+        let mut buf = vec![];
 
         // write the data to the buffer
         let result = data.encode(&mut buf);
@@ -260,9 +363,10 @@ mod tests {
         assert!(result.is_ok());
 
         // verify that if deserialized, the data is the same
-        let result = Data::decode(&buf);
+        let result = Data::decode(&mut Cursor::new(&mut buf));
         assert!(result.is_ok());
         let deserialized = result.unwrap();
-        assert_eq!(data, deserialized);
+        assert_eq!(data.crc(), deserialized.crc());
+        assert!(deserialized.verify().is_ok());
     }
 }

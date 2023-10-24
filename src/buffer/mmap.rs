@@ -1,15 +1,18 @@
-use std::{cell::UnsafeCell, path::Path};
+use std::{cell::UnsafeCell, io::Cursor, path::Path};
 
 use memmap2::MmapMut;
 
-use crate::codec::{Decode, Encode};
+use necronomicon::{Decode, Encode};
 
 use super::{Buffer, Error};
 
 pub struct MmapBuffer(UnsafeCell<MmapMut>);
 
 impl MmapBuffer {
-    pub fn new(path: impl AsRef<Path>, size: u64) -> std::io::Result<Self> {
+    pub fn new<P>(path: P, size: u64) -> std::io::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -25,19 +28,21 @@ impl MmapBuffer {
 impl Buffer for MmapBuffer {
     fn decode_at<'a, T>(&'a self, off: usize, len: usize) -> Result<T, Error>
     where
-        T: Decode<'a>,
+        T: Decode<Cursor<&'a [u8]>>,
     {
-        let shared = unsafe { &*self.0.get() };
-        let res = T::decode(&shared[off..(off + len)])?;
+        let shared = unsafe { &mut *self.0.get() };
+        let shared = &mut shared[off..(off + len)];
+        let res = T::decode(&mut Cursor::new(shared))?;
         Ok(res)
     }
 
-    fn encode_at<T>(&self, off: usize, len: usize, data: &T) -> Result<(), Error>
+    fn encode_at<'a, T>(&'a self, off: usize, len: usize, data: &T) -> Result<(), Error>
     where
-        T: Encode,
+        T: Encode<Cursor<&'a mut [u8]>>,
     {
         let exclusive = unsafe { &mut *self.0.get() };
-        data.encode(&mut exclusive[off..(off + len)])?;
+        let exclusive = &mut exclusive[off..(off + len)];
+        data.encode(&mut Cursor::new(exclusive))?;
         Ok(())
     }
 
@@ -64,7 +69,7 @@ impl Buffer for MmapBuffer {
         let end = off + len;
         let exclusive = unsafe { &mut *self.0.get() };
         exclusive[start..end].copy_from_slice(&buf[..(end - start)]);
-        exclusive.flush_async_range(start, len)?;
+        exclusive.flush_range(start, len)?;
         Ok(len as u64)
     }
 

@@ -37,6 +37,13 @@ where
     }
 }
 
+#[derive(Debug)]
+pub struct Push {
+    pub offset: u64,
+    pub len: u64,
+    pub crc: u32,
+}
+
 // SPSC queue
 impl<B> DequeueNode<B>
 where
@@ -93,7 +100,7 @@ where
         }
 
         let start = read_ptr as usize;
-        let len = Metadata::size(self.version) as usize;
+        let len = Metadata::struct_size(self.version) as usize;
         let metadata: Metadata = self.buffer.decode_at(start, len)?;
         metadata.verify()?;
 
@@ -123,17 +130,18 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push(&self, buf: &[u8]) -> Result<(), Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
 
         let mut write_ptr = self.write.load(Ordering::Acquire);
+        let orig_write_ptr = write_ptr;
         let read_ptr = self.read.load(Ordering::Acquire);
         let entry = self.entry.load(Ordering::Acquire) + 1;
 
         let data = Data::new(self.version, buf);
-        let entry_size = Metadata::size(self.version) as u64
+        let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, buf.len() as u32) as u64;
         let metadata = Metadata::new(
             self.version,
@@ -155,14 +163,17 @@ where
             return Err(Error::NodeFull);
         }
 
+        // We need the original ptr for returning where the data is stored.
+        let offset = write_ptr;
+
         // write the metadata.
         self.buffer.encode_at(
             write_ptr as usize,
-            Metadata::size(self.version) as usize,
+            Metadata::struct_size(self.version) as usize,
             &metadata,
         )?;
 
-        write_ptr += Metadata::size(self.version) as u64;
+        write_ptr += Metadata::struct_size(self.version) as u64;
 
         // write the data.
         self.buffer
@@ -171,11 +182,16 @@ where
         write_ptr += Metadata::calculate_data_size(self.version, buf.len() as u32) as u64;
 
         // update the write pointer.
+        let len = write_ptr - orig_write_ptr;
         self.write.store(write_ptr, Ordering::Release);
         self.entry.store(entry, Ordering::Release);
         self.has_data.store(true, Ordering::Release);
 
-        Ok(())
+        Ok(Push {
+            offset,
+            len,
+            crc: data.crc(),
+        })
     }
 }
 
@@ -209,7 +225,7 @@ mod test {
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
         assert_eq!(node.read.load(std::sync::atomic::Ordering::Acquire), 0);
-        assert_eq!(node.write.load(std::sync::atomic::Ordering::Acquire), 71);
+        assert_eq!(node.write.load(std::sync::atomic::Ordering::Acquire), 61);
         assert_eq!(node.entry.load(std::sync::atomic::Ordering::Acquire), 1);
         assert!(node.has_data.load(std::sync::atomic::Ordering::Acquire));
     }
@@ -229,7 +245,7 @@ mod test {
 
     #[test]
     fn test_push_node_full() {
-        let buffer = InMemBuffer::new(128);
+        let buffer = InMemBuffer::new(64);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
         node.push(b"hello world").unwrap();
@@ -243,7 +259,7 @@ mod test {
 
         assert_matches!(
             node.push(&[0u8; 129]),
-            Err(Error::EntryLargerThanNode(189, 128))
+            Err(Error::EntryLargerThanNode(179, 128))
         );
     }
 
