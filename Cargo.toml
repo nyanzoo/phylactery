@@ -20,7 +20,7 @@ crc32fast = "1"
 memmap2 = "0"
 thiserror = "1"
 
-necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop" }
+necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "master" }
 # necronomicon = { path = "../necronomicon" }
 
 [dev-dependencies]
