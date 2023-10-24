@@ -21,10 +21,10 @@ pub enum Version {
     V1,
 }
 
-impl Into<u8> for Version {
-    fn into(self) -> u8 {
-        match self {
-            Self::V1 => 1,
+impl From<Version> for u8 {
+    fn from(val: Version) -> Self {
+        match val {
+            Version::V1 => 1,
         }
     }
 }
@@ -213,7 +213,7 @@ impl<'a> Data<'a> {
         }
     }
 
-    pub fn split_at<'b>(&'b self, idx: usize) -> (&'b [u8], &'b [u8]) {
+    pub fn split_at(&self, idx: usize) -> (&[u8], &[u8]) {
         match self {
             Self::Version1(data) => match data {
                 v1::Data::Read(data) => data.data.split_at(idx),

@@ -139,7 +139,7 @@ where
         let len = buf.len() as u32;
         let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, len) as u64;
-        let data = Data::new(self.version, &buf);
+        let data = Data::new(self.version, buf);
         let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
 
         // If the entry is too big, we can't write.
