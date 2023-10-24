@@ -60,7 +60,7 @@ where
 
 impl PartialOrd for Metadata {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.entry.partial_cmp(&other.entry())
+        Some(self.cmp(other))
     }
 }
 
