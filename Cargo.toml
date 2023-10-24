@@ -22,7 +22,7 @@ memmap2 = "0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 
-necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop" }
+necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "master" }
 # necronomicon = { path = "../necronomicon" }
 
 [dev-dependencies]
