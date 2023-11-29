@@ -88,13 +88,12 @@ impl Graveyard {
 
             for tomb in tombs {
                 let file = tomb[0].file;
-                let file = format!("{}.bin", file);
-                let out = self.dir.join(format!("{}.new", file));
-                let file = self.dir.join(file);
+                let path = format!("{}.bin", file);
+                let out = self.dir.join(format!("{}.new", path));
+                let path = self.dir.join(path);
 
-                let mut has_data = false;
                 // If file doesn't exist, then we have already compacted it, or removed it.
-                if let Ok(mut file) = std::fs::File::open(file.clone()) {
+                if let Ok(mut file) = std::fs::File::open(path.clone()) {
                     let len = file.metadata().expect("no file metadata").len();
                     let mut in_buf = InMemBuffer::new(len);
 
@@ -103,7 +102,7 @@ impl Graveyard {
 
                     let out_buf = Self::compact_buf(tomb, in_buf);
 
-                    has_data = !out_buf.is_empty();
+                    let mut has_data = !out_buf.is_empty();
                     has_data &= out_buf.iter().cloned().map(u64::from).sum::<u64>() != 0;
 
                     if has_data {
@@ -112,11 +111,11 @@ impl Graveyard {
 
                         out.write_all(&out_buf).expect("failed to write file");
                     }
-                }
 
-                std::fs::remove_file(file.clone()).expect("failed to remove file");
-                if has_data {
-                    std::fs::rename(out, file.clone()).expect("failed to rename file");
+                    std::fs::remove_file(path.clone()).expect("failed to remove file");
+                    if has_data {
+                        std::fs::rename(out, path.clone()).expect("failed to rename file");
+                    }
                 }
             }
 

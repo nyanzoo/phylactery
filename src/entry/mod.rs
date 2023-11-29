@@ -334,6 +334,7 @@ mod tests {
 
     use std::io::Cursor;
 
+    use coverage_helper::test;
     use necronomicon::{Decode, Encode};
 
     use super::{v1, Data, Metadata, Version};
