@@ -446,4 +446,46 @@ mod tests {
             assert_eq!(free.data::<u64>().unwrap(), 42);
         }
     }
+
+    #[test]
+    fn recover() {
+        const DATA_SIZE: usize = 8;
+        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + DATA_SIZE);
+
+        let buffer = InMemBuffer::new(1024);
+        let new_buffer;
+        let mut entries = vec![];
+        {
+            let alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(buffer).unwrap();
+
+            for _ in 0..max_entries {
+                let entry = alloc.alloc().unwrap();
+                entries.push(entry);
+            }
+
+            assert!(alloc.alloc().is_err());
+
+            entries.remove(max_entries / 2); // should be some middle entry
+
+            entries.push(alloc.alloc().unwrap());
+            new_buffer = alloc.buffer.clone();
+        }
+
+        for free in entries.iter_mut() {
+            free.update(&42u64).unwrap();
+        }
+
+        let mut alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(
+            unsafe { &*Rc::into_raw(new_buffer) }.clone(),
+        )
+        .unwrap();
+
+        let recovered = alloc.recovered_entries().unwrap();
+
+        assert_eq!(recovered.len(), max_entries);
+
+        for free in recovered.into_iter() {
+            assert_eq!(free.data::<u64>().unwrap(), 42);
+        }
+    }
 }
