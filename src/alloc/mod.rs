@@ -1,8 +1,7 @@
 use std::{
-    cell::UnsafeCell,
     io::{Cursor, Read, Write},
     mem::size_of,
-    ptr::NonNull,
+    rc::Rc,
 };
 
 use necronomicon::{Decode, Encode};
@@ -22,7 +21,59 @@ struct Node {
 
 const NODE_SIZE: usize = size_of::<Node>();
 const NODE_DATA_OFFSET: usize = NODE_SIZE;
-const SENTINEL_SIZE: usize = size_of::<usize>();
+const SENTINEL_SIZE: usize = size_of::<u64>() * 2;
+
+#[derive(Debug)]
+struct Sentinel {
+    next: u64,
+    count: u64,
+}
+
+impl From<(u64, u64)> for Sentinel {
+    fn from((next, count): (u64, u64)) -> Self {
+        Self { next, count }
+    }
+}
+
+impl From<u128> for Sentinel {
+    fn from(value: u128) -> Self {
+        Self {
+            next: (value >> 64) as u64,
+            count: value as u64,
+        }
+    }
+}
+
+impl From<&Sentinel> for u128 {
+    fn from(value: &Sentinel) -> Self {
+        ((value.next as u128) << 64) | (value.count as u128)
+    }
+}
+
+impl<R> Decode<R> for Sentinel
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        let next = u64::decode(reader)?;
+        let count = u64::decode(reader)?;
+        Ok(Self { next, count })
+    }
+}
+
+impl<W> Encode<W> for Sentinel
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        let value: u128 = self.into();
+        value.encode(writer)?;
+        Ok(())
+    }
+}
 
 impl<R> Decode<R> for Node
 where
@@ -56,7 +107,7 @@ where
     data_start: usize,
     data_end: usize,
     node: usize,
-    buffer: NonNull<B>,
+    buffer: Rc<B>,
 }
 
 impl<B> Entry<B>
@@ -65,11 +116,11 @@ where
 {
     pub fn data<'a, T>(&'a self) -> Result<T, Error>
     where
-        T: Decode<&'a [u8]>,
+        T: Decode<Cursor<&'a [u8]>>,
     {
-        let buf = self.buffer_ref().as_ref();
-        let mut buf = &buf[self.data_start..self.data_end];
-        let t = T::decode(&mut buf)?;
+        let t = self
+            .buffer
+            .decode_at::<T>(self.data_start, self.data_end - self.data_start)?;
         Ok(t)
     }
 
@@ -77,21 +128,9 @@ where
     where
         T: Encode<Cursor<&'a mut [u8]>>,
     {
-        let start = self.data_start;
-        let end = self.data_end;
-        let buf = self.buffer_mut().as_mut();
-        let buf = &mut buf[start..end];
-        let mut buf = Cursor::new(buf);
-        t.encode(&mut buf)?;
+        self.buffer
+            .encode_at(self.data_start, self.data_end - self.data_start, t)?;
         Ok(())
-    }
-
-    pub fn buffer_ref(&self) -> &B {
-        unsafe { self.buffer.as_ref() }
-    }
-
-    pub fn buffer_mut(&mut self) -> &mut B {
-        unsafe { self.buffer.as_mut() }
     }
 }
 
@@ -100,28 +139,37 @@ where
     B: Buffer,
 {
     fn drop(&mut self) {
-        let buffer = self.buffer_ref();
-        let mut next = buffer
+        let mut sentinel = self
+            .buffer
+            .decode_at::<Sentinel>(0, NODE_SIZE)
+            .expect("sentinel");
+
+        let mut next = self
+            .buffer
             .decode_at::<Node>(self.node, NODE_SIZE)
             .expect("drop node");
-        let mut sentinel = buffer.decode_at::<usize>(0, NODE_SIZE).expect("sentinel");
 
-        if sentinel > self.node {
-            next.next = sentinel;
+        if sentinel.next > self.node as u64 {
+            next.next = sentinel.next as usize;
             next.prev = 0;
-            sentinel = self.node;
-            buffer
+            sentinel.next = self.node as u64;
+            sentinel.count -= 1;
+            self.buffer
                 .encode_at(self.node, NODE_SIZE, &next)
                 .expect("encode node");
-            buffer
+            self.buffer
                 .encode_at(0, SENTINEL_SIZE, &sentinel)
                 .expect("encode sentinel");
         } else {
-            next.prev = sentinel;
+            next.prev = sentinel.next as usize;
             next.next = usize::MAX;
-            buffer
+            sentinel.count -= 1;
+            self.buffer
                 .encode_at(self.node, NODE_SIZE, &next)
                 .expect("encode node");
+            self.buffer
+                .encode_at(0, SENTINEL_SIZE, &sentinel)
+                .expect("encode sentinel");
         }
     }
 }
@@ -130,7 +178,7 @@ pub(crate) struct FixedSizeAllocator<B, const DATA_SIZE: usize>
 where
     B: Buffer,
 {
-    buffer: UnsafeCell<B>,
+    buffer: Rc<B>,
 }
 
 impl<B, const DATA_SIZE: usize> FixedSizeAllocator<B, DATA_SIZE>
@@ -140,16 +188,14 @@ where
     pub(crate) fn new(buffer: B) -> Result<Self, Error> {
         // sentinel node is first usize and always points to first
         // available node.
-        let mut buf = [0; size_of::<usize>()];
-        buffer.read_at(&mut buf, 0)?;
-        let mut next_free = usize::from_be_bytes(buf);
+        let mut sentinel = buffer.decode_at::<Sentinel>(0, SENTINEL_SIZE)?;
         // We need to update to after sentinel node.
         // Prepopulate the buffer.
-        if next_free == 0 {
-            next_free += size_of::<usize>();
-            buffer.encode_at(0, size_of::<usize>(), &next_free)?;
+        if sentinel.count == 0 {
+            sentinel.next += SENTINEL_SIZE as u64;
+            buffer.encode_at(0, SENTINEL_SIZE, &sentinel)?;
             let mut prev = 0;
-            let mut next = next_free;
+            let mut next = sentinel.next as usize;
             while ((next + NODE_SIZE) as u64) < buffer.capacity() {
                 let pos = next;
                 next += NODE_SIZE + DATA_SIZE;
@@ -162,7 +208,7 @@ where
         }
 
         Ok(Self {
-            buffer: UnsafeCell::new(buffer),
+            buffer: Rc::new(buffer),
         })
     }
 
@@ -181,14 +227,15 @@ where
                 continue;
             }
 
-            let data_start = start + NODE_DATA_OFFSET;
+            // We skip a node + data above, so just rollback the data to be at node offset and get correct data offsets.
+            let data_start = start - DATA_SIZE;
             let data_end = data_start + DATA_SIZE;
 
             let free = Entry {
                 data_start,
                 data_end,
                 node: pos,
-                buffer: NonNull::new(self.buffer.get()).expect("null"),
+                buffer: self.buffer.clone(),
             };
 
             frees.push(free);
@@ -198,15 +245,18 @@ where
     }
 
     pub(crate) fn alloc(&self) -> Result<Entry<B>, Error> {
-        let mut next_free = self.sentinel()?;
-
-        if ((next_free + NODE_SIZE) as u64) >= self.capacity() {
+        let Sentinel {
+            next: next_free,
+            count,
+        } = self.sentinel()?;
+        if (next_free + NODE_SIZE as u64) >= self.capacity() {
             return Err(Error::OutOfMemory {
                 total: self.capacity(),
                 used: next_free,
             });
         }
 
+        let next_free = next_free as usize;
         let mut next = self.decode_node(next_free)?;
 
         let data_start = next_free + NODE_DATA_OFFSET;
@@ -216,42 +266,48 @@ where
             data_start,
             data_end,
             node: next_free,
-            buffer: NonNull::new(self.buffer.get()).expect("null"),
+            buffer: self.buffer.clone(),
         };
 
-        next_free = next.next;
+        let sentinel = next.next;
         next.prev = usize::MAX;
         next.next = usize::MAX;
+        self.update_next(next_free, &next)?;
 
-        self.update_sentinel(next_free)?;
+        self.update_sentinel(Sentinel {
+            next: sentinel as u64,
+            count: count + 1,
+        })?;
 
         Ok(free)
     }
 
     fn capacity(&self) -> u64 {
-        let buffer = unsafe { NonNull::new(self.buffer.get()).expect("null").as_ref() };
-        buffer.capacity()
+        self.buffer.capacity()
     }
 
     fn decode_node(&self, off: usize) -> Result<Node, Error> {
         if off + NODE_SIZE > self.capacity() as usize {
             return Err(Error::BadNode(off));
         }
-        let buffer = unsafe { NonNull::new(self.buffer.get()).expect("null").as_ref() };
-        let node = buffer.decode_at::<Node>(off, NODE_SIZE)?;
+        let node = self.buffer.decode_at::<Node>(off, NODE_SIZE)?;
         Ok(node)
     }
 
-    fn sentinel(&self) -> Result<usize, Error> {
-        let buffer = unsafe { NonNull::new(self.buffer.get()).expect("null").as_ref() };
-        let sentinel = buffer.decode_at(0, size_of::<usize>())?;
+    fn sentinel(&self) -> Result<Sentinel, Error> {
+        let sentinel = self.buffer.decode_at(0, SENTINEL_SIZE)?;
 
         Ok(sentinel)
     }
 
-    fn update_sentinel(&self, sentinel: usize) -> Result<(), Error> {
-        let buffer = unsafe { NonNull::new(self.buffer.get()).expect("null").as_ref() };
-        buffer.encode_at(0, size_of::<usize>(), &sentinel)?;
+    fn update_sentinel(&self, sentinel: Sentinel) -> Result<(), Error> {
+        self.buffer.encode_at(0, SENTINEL_SIZE, &sentinel)?;
+
+        Ok(())
+    }
+
+    fn update_next(&self, pos: usize, node: &Node) -> Result<(), Error> {
+        self.buffer.encode_at(pos, NODE_SIZE, node)?;
 
         Ok(())
     }
@@ -259,6 +315,9 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    use std::rc::Rc;
+
     use crate::buffer::InMemBuffer;
 
     use super::{FixedSizeAllocator, NODE_SIZE, SENTINEL_SIZE};
@@ -290,6 +349,48 @@ mod tests {
 
         for _ in 0..max_entries {
             alloc.alloc().unwrap();
+        }
+    }
+
+    #[test]
+    fn recover() {
+        const DATA_SIZE: usize = 8;
+        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + DATA_SIZE);
+
+        let buffer = InMemBuffer::new(1024);
+        let new_buffer;
+        let mut entries = vec![];
+        {
+            let alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(buffer).unwrap();
+
+            for _ in 0..max_entries {
+                let entry = alloc.alloc().unwrap();
+                entries.push(entry);
+            }
+
+            assert!(alloc.alloc().is_err());
+
+            entries.remove(max_entries / 2); // should be some middle entry
+
+            entries.push(alloc.alloc().unwrap());
+            new_buffer = alloc.buffer.clone();
+        }
+
+        for free in entries.iter_mut() {
+            free.update(&42u64).unwrap();
+        }
+
+        let mut alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(
+            unsafe { &*Rc::into_raw(new_buffer) }.clone(),
+        )
+        .unwrap();
+
+        let recovered = alloc.recovered_entries().unwrap();
+
+        assert_eq!(recovered.len(), max_entries);
+
+        for free in recovered.into_iter() {
+            assert_eq!(free.data::<u64>().unwrap(), 42);
         }
     }
 }
