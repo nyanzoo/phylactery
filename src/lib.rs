@@ -1,4 +1,4 @@
-#![cfg_attr(nightly, feature(no_coverage))]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 mod alloc;
 

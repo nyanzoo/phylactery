@@ -11,9 +11,10 @@ use crate::{
     entry::{crc_check, last_metadata, Data, Metadata, Version},
 };
 
+use necronomicon::Encode;
+
 pub mod error;
 pub use error::Error;
-use necronomicon::Encode;
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
 where
@@ -590,6 +591,7 @@ mod tests {
         time::Duration,
     };
 
+    use coverage_helper::test;
     use matches::assert_matches;
     use necronomicon::{Decode, Encode};
 
