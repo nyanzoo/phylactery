@@ -4,7 +4,9 @@ use memmap2::MmapMut;
 
 use necronomicon::{Decode, Encode};
 
-use super::{Buffer, Error};
+use crate::Error;
+
+use super::Buffer;
 
 pub struct MmapBuffer(UnsafeCell<MmapMut>);
 

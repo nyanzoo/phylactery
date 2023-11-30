@@ -3,9 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::{
     buffer::Buffer,
     entry::{last_metadata, Data, Metadata, Version},
+    Error,
 };
-
-use super::Error;
 
 pub struct DequeueNode<B>
 where

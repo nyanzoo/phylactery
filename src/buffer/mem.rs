@@ -2,7 +2,9 @@ use std::{cell::UnsafeCell, io::Cursor};
 
 use necronomicon::{Decode, Encode};
 
-use super::{Buffer, Error};
+use crate::Error;
+
+use super::Buffer;
 
 pub struct InMemBuffer(UnsafeCell<Vec<u8>>);
 

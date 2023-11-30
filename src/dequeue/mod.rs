@@ -15,10 +15,8 @@ use necronomicon::Decode;
 use crate::{
     buffer::InMemBuffer,
     entry::{Data, Metadata, Version},
+    Error,
 };
-
-mod error;
-pub use error::Error;
 
 use self::node::DequeueNode;
 

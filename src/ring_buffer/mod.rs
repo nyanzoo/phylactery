@@ -9,12 +9,10 @@ use std::{
 use crate::{
     buffer::Buffer,
     entry::{crc_check, last_metadata, Data, Metadata, Version},
+    Error,
 };
 
 use necronomicon::Encode;
-
-pub mod error;
-pub use error::Error;
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
 where
@@ -598,9 +596,10 @@ mod tests {
     use crate::{
         buffer::{InMemBuffer, MmapBuffer},
         entry::{self, v1, Data, Metadata, Version},
+        Error,
     };
 
-    use super::{error::Error, RingBuffer};
+    use super::RingBuffer;
 
     #[test]
     fn test_init() {
@@ -719,10 +718,10 @@ mod tests {
         let result = ring_buffer.pop(&mut data);
         assert_matches!(
             result.unwrap_err(),
-            Error::Entry(entry::Error::MetadataCrcMismatch {
+            Error::MetadataCrcMismatch {
                 expected: 1234567,
                 actual: 1970696030,
-            })
+            }
         );
     }
 
@@ -769,10 +768,10 @@ mod tests {
         let result = ring_buffer.pop(&mut data);
         assert_matches!(
             result.unwrap_err(),
-            Error::Entry(entry::Error::DataCrcMismatch {
+            Error::DataCrcMismatch {
                 expected: 1234567,
                 actual: 222957957
-            })
+            }
         );
     }
 

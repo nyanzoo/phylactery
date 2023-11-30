@@ -14,14 +14,12 @@ use crate::{
     dequeue::{Dequeue, Push},
     entry::{Data, Version},
     ring_buffer::{self},
+    Error,
 };
 
 mod graveyard;
 pub use graveyard::Graveyard;
 use graveyard::Tombstone;
-
-mod error;
-pub use error::Error;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Lookup<'a> {

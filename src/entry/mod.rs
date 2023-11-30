@@ -5,12 +5,9 @@ use std::{
 
 use necronomicon::{Decode, Encode};
 
-use crate::buffer::Buffer;
+use crate::{buffer::Buffer, Error};
 
 pub mod v1;
-
-pub mod error;
-pub use error::Error;
 
 const VERSION_SIZE: usize = size_of::<u8>();
 

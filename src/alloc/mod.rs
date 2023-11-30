@@ -6,10 +6,7 @@ use std::{
 
 use necronomicon::{Decode, Encode};
 
-use crate::buffer::Buffer;
-
-mod error;
-pub(crate) use error::Error;
+use crate::{buffer::Buffer, Error};
 
 // We need to be able to recover from a crash.
 // We can only do this if the Node contains info on
