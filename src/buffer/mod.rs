@@ -2,14 +2,13 @@ use std::io::Cursor;
 
 use necronomicon::{Decode, Encode};
 
-mod error;
-pub use error::Error;
-
 mod mem;
 pub use mem::InMemBuffer;
 
 mod mmap;
 pub use mmap::MmapBuffer;
+
+use crate::Error;
 
 pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// # Description

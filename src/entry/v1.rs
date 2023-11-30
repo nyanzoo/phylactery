@@ -5,7 +5,7 @@ use std::{
 
 use necronomicon::{Decode, Encode};
 
-use super::Error;
+use crate::Error;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
