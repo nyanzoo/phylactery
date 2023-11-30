@@ -246,7 +246,7 @@ where
             next: next_free,
             count,
         } = self.sentinel()?;
-        if (next_free + NODE_SIZE as u64) >= self.capacity() {
+        if next_free == u64::MAX || (next_free + NODE_SIZE as u64) >= self.capacity() {
             return Err(Error::OutOfMemory {
                 total: self.capacity(),
                 used: next_free,
