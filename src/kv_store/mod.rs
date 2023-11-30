@@ -347,7 +347,7 @@ where
     /// See [`Error`] for more details.
     pub fn insert(&mut self, key: Key, value: &[u8]) -> Result<(), Error> {
         // We need to tombstone old entry if it exists.
-        if let Some(entry) = self.lookup.get(&key) {
+        if let Some(entry) = self.lookup.remove(&key) {
             let mut meta = entry.data::<Metadata>()?;
 
             meta.state = MetaState::Compacting;
@@ -358,6 +358,9 @@ where
             tombstone.encode(&mut buf)?;
             self.graveyard_pusher.push(&buf)?;
         }
+
+        // Maybe we should have meta also be a ring buffer?
+        let mut entry = self.meta.alloc()?;
 
         // Dequeue needs to also return the offset and file of the data.
         let Push {
@@ -377,8 +380,7 @@ where
             state: MetaState::Full,
             key,
         };
-        // Maybe we should have meta also be a ring buffer?
-        let mut entry = self.meta.alloc()?;
+
         entry.update(&metadata)?;
 
         self.lookup.insert(key, entry);
