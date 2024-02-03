@@ -308,7 +308,7 @@ dependencies = [
 [[package]]
 name = "necronomicon"
 version = "0.1.0"
-source = "git+https://github.com/nyanzoo/necronomicon?branch=master#07fab2f7cf9aca40199804fac035f5e709a34c07"
+source = "git+https://github.com/nyanzoo/necronomicon?branch=develop#e55b209032af216d9649b9f27d0fa4405e8efeb0"
 dependencies = [
  "log",
  "thiserror",
