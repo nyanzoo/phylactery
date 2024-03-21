@@ -3,7 +3,7 @@ use std::{
     mem::size_of,
 };
 
-use necronomicon::{Decode, Encode};
+use necronomicon::{BinaryData, Decode, DecodeOwned, Encode, Owned, Shared};
 
 use crate::Error;
 
@@ -147,51 +147,20 @@ impl Metadata {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DataRead {
-    // The data of the entry.
-    pub(crate) data: Vec<u8>,
-    // The crc of the data.
-    crc: u32,
-}
-
-impl DataRead {
-    pub fn verify(&self) -> Result<(), Error> {
-        let crc = generate_crc(&self.data);
-        if crc != self.crc {
-            return Err(Error::DataCrcMismatch {
-                expected: self.crc,
-                actual: crc,
-            });
-        }
-        Ok(())
-    }
-}
-
-impl<R> Decode<R> for DataRead
+pub struct Data<S>
 where
-    R: Read,
+    S: Shared,
 {
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
-    where
-        Self: Sized,
-    {
-        let data = Vec::decode(reader)?;
-        let crc = u32::decode(reader)?;
-        Ok(Self { data, crc })
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DataWrite<'a> {
     // The data of the entry.
-    pub(crate) data: &'a [u8],
+    pub(crate) data: BinaryData<S>,
     // The crc of the data.
     pub(crate) crc: u32,
 }
 
-impl<W> Encode<W> for DataWrite<'_>
+impl<W, S> Encode<W> for Data<S>
 where
     W: Write,
+    S: Shared,
 {
     fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
         self.data.encode(writer)?;
@@ -200,72 +169,51 @@ where
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Data<'a> {
-    Read(DataRead),
-    Write(DataWrite<'a>),
-}
-
-impl<W> Encode<W> for Data<'_>
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        match self {
-            Self::Read(_) => panic!("cannot encode read data"),
-            Self::Write(data) => data.encode(writer),
-        }
-    }
-}
-
-impl<R> Decode<R> for Data<'_>
+impl<R, O> DecodeOwned<R, O> for Data<O::Shared>
 where
     R: Read,
+    O: Owned,
 {
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    fn decode_owned(reader: &mut R, buffer: &mut O) -> Result<Self, necronomicon::Error>
     where
         Self: Sized,
     {
-        let data = DataRead::decode(reader)?;
-        Ok(Self::Read(data))
+        let data = BinaryData::decode_owned(reader, buffer)?;
+        let crc = u32::decode(reader)?;
+        Ok(Self { data, crc })
     }
 }
 
-impl<'a> Data<'a> {
-    pub fn write(data: &'a [u8]) -> Self {
-        let crc = generate_crc(data);
-        Self::Write(DataWrite { data, crc })
+impl<S> Data<S>
+where
+    S: Shared,
+{
+    pub fn new(data: BinaryData<S>) -> Self {
+        let crc = generate_crc(data.data().as_slice());
+        Self { data, crc }
     }
 
-    pub fn copy_into(self, buf: &mut [u8]) {
-        match self {
-            Self::Read(DataRead { data, .. }) => {
-                let len = std::cmp::min(buf.len(), data.len());
-                buf[..len].copy_from_slice(&data[..len]);
-            }
-            Self::Write(_) => panic!("cannot copy write data"),
-        }
+    pub fn data(&self) -> &BinaryData<S> {
+        &self.data
     }
 
     pub fn crc(&self) -> u32 {
-        match self {
-            Self::Read(DataRead { crc, .. }) => *crc,
-            Self::Write(DataWrite { crc, .. }) => *crc,
-        }
+        self.crc
     }
 
     pub fn struct_size(&self) -> u32 {
-        match self {
-            Self::Read(DataRead { data, .. }) => 2 + data.len() as u32 + size_of::<u32>() as u32,
-            Self::Write(DataWrite { data, .. }) => 2 + data.len() as u32 + size_of::<u32>() as u32,
-        }
+        2 + self.data.len() as u32 + size_of::<u32>() as u32
     }
 
     pub fn verify(&self) -> Result<(), Error> {
-        match self {
-            Self::Read(data) => data.verify(),
-            Self::Write(_) => Err(Error::NotReadData),
+        let crc = generate_crc(self.data.data().as_slice());
+        if crc != self.crc {
+            return Err(Error::DataCrcMismatch {
+                expected: self.crc,
+                actual: crc,
+            });
         }
+        Ok(())
     }
 }
 

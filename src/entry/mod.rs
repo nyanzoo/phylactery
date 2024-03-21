@@ -3,7 +3,7 @@ use std::{
     mem::size_of,
 };
 
-use necronomicon::{Decode, Encode};
+use necronomicon::{BinaryData, Decode, DecodeOwned, Encode, Owned, Shared};
 
 use crate::{buffer::Buffer, Error};
 
@@ -177,30 +177,26 @@ where
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub enum Data<'a> {
-    Version1(v1::Data<'a>),
+pub enum Data<S>
+where
+    S: Shared,
+{
+    Version1(v1::Data<S>),
 }
 
-impl<'a> Data<'a> {
-    pub fn new(version: Version, data: &'a [u8]) -> Self {
+impl<S> Data<S>
+where
+    S: Shared,
+{
+    pub fn new(version: Version, data: BinaryData<S>) -> Self {
         match version {
-            Version::V1 => Self::Version1(v1::Data::write(data)),
+            Version::V1 => Self::Version1(v1::Data::new(data)),
         }
     }
 
-    pub fn copy_into(self, buf: &mut [u8]) {
+    pub fn into_inner(self) -> BinaryData<S> {
         match self {
-            Self::Version1(data) => data.copy_into(buf),
-        }
-    }
-
-    pub fn into_inner(self) -> Vec<u8> {
-        match self {
-            Self::Version1(data) => match data {
-                v1::Data::Read(data) => data.data,
-                v1::Data::Write(_) => panic!("cannot get inner data from write data"),
-            },
+            Data::Version1(data) => data.data,
         }
     }
 
@@ -210,14 +206,14 @@ impl<'a> Data<'a> {
         }
     }
 
-    pub fn split_at(&self, idx: usize) -> (&[u8], &[u8]) {
-        match self {
-            Self::Version1(data) => match data {
-                v1::Data::Read(data) => data.data.split_at(idx),
-                v1::Data::Write(_) => panic!("cannot split write data"),
-            },
-        }
-    }
+    // pub fn split_at(&self, idx: usize) -> (&[u8], &[u8]) {
+    //     match self {
+    //         Self::Version1(data) => match data {
+    //             v1::Data::Read(data) => data.data.split_at(idx),
+    //             v1::Data::Write(_) => panic!("cannot split write data"),
+    //         },
+    //     }
+    // }
 
     pub fn verify(&self) -> Result<(), Error> {
         match self {
@@ -232,21 +228,23 @@ impl<'a> Data<'a> {
     }
 }
 
-impl<R> Decode<R> for Data<'_>
+impl<R, O> DecodeOwned<R, O> for Data<O::Shared>
 where
     R: Read,
+    O: Owned,
 {
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error> {
+    fn decode_owned(reader: &mut R, buffer: &mut O) -> Result<Self, necronomicon::Error> {
         let version = Version::decode(reader)?;
         match version {
-            Version::V1 => Ok(Self::Version1(v1::Data::decode(reader)?)),
+            Version::V1 => Ok(Self::Version1(v1::Data::decode_owned(reader, buffer)?)),
         }
     }
 }
 
-impl<W> Encode<W> for Data<'_>
+impl<W, S> Encode<W> for Data<S>
 where
     W: Write,
+    S: Shared,
 {
     fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
         match self {
@@ -332,7 +330,7 @@ mod tests {
     use std::io::Cursor;
 
     use coverage_helper::test;
-    use necronomicon::{Decode, Encode};
+    use necronomicon::{binary_data, DecodeOwned, Encode, Pool, PoolImpl};
 
     use super::{v1, Data, Metadata, Version};
 
@@ -346,10 +344,10 @@ mod tests {
     #[test]
     fn test_data_write() {
         // create a Data instance to write
-        let data = Data::Version1(v1::Data::Write(v1::DataWrite {
-            data: "kittens".as_bytes(),
+        let data = Data::Version1(v1::Data {
+            data: binary_data(b"kittens"),
             crc: 2940700499,
-        }));
+        });
 
         // create a buffer to write the data to
         let mut buf = vec![];
@@ -360,8 +358,11 @@ mod tests {
         // ensure that the write operation succeeded
         assert!(result.is_ok());
 
+        let pool = PoolImpl::new(1024, 1);
+        let mut owned = pool.acquire().unwrap();
+
         // verify that if deserialized, the data is the same
-        let result = Data::decode(&mut Cursor::new(&mut buf));
+        let result = Data::decode_owned(&mut Cursor::new(&mut buf), &mut owned);
         assert!(result.is_ok());
         let deserialized = result.unwrap();
         assert_eq!(data.crc(), deserialized.crc());

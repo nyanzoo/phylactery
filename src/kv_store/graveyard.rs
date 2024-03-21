@@ -1,17 +1,21 @@
 use std::{
     io::{Cursor, Read, Write},
+    mem::size_of,
     path::PathBuf,
     time::Duration,
 };
 
-use necronomicon::{Decode, Encode};
+use necronomicon::{Decode, Encode, Pool, PoolImpl, Shared};
 
 use crate::{
     buffer::{InMemBuffer, MmapBuffer},
     ring_buffer,
 };
 
+pub const TOMBSTONE_LEN: usize = size_of::<Tombstone>();
+
 #[derive(Debug)]
+#[repr(C, packed)]
 pub(crate) struct Tombstone {
     pub crc: u32,
     pub file: u64,
@@ -24,10 +28,10 @@ where
     W: Write,
 {
     fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.crc.encode(writer)?;
-        self.file.encode(writer)?;
-        self.offset.encode(writer)?;
-        self.len.encode(writer)?;
+        unsafe { std::ptr::addr_of!(self.crc).read_unaligned() }.encode(writer)?;
+        unsafe { std::ptr::addr_of!(self.file).read_unaligned() }.encode(writer)?;
+        unsafe { std::ptr::addr_of!(self.offset).read_unaligned() }.encode(writer)?;
+        unsafe { std::ptr::addr_of!(self.len).read_unaligned() }.encode(writer)?;
         Ok(())
     }
 }
@@ -44,7 +48,7 @@ where
         let file = u64::decode(reader)?;
         let offset = u64::decode(reader)?;
         let len = u64::decode(reader)?;
-        Ok(Tombstone {
+        Ok(Self {
             crc,
             file,
             offset,
@@ -70,11 +74,16 @@ where
 pub struct Graveyard {
     dir: PathBuf,
     popper: ring_buffer::Popper<MmapBuffer>,
+    pool: PoolImpl,
 }
 
 impl Graveyard {
     pub fn new(dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
-        Self { dir, popper }
+        Self {
+            dir,
+            popper,
+            pool: PoolImpl::new(TOMBSTONE_LEN, 1024 * 1024),
+        }
     }
 
     // The problem is we also need to update the metadata for the dequeue.
@@ -124,34 +133,38 @@ impl Graveyard {
     }
 
     fn collect(&self) -> Vec<Vec<Tombstone>> {
-        let len = 28;
-
         let mut nodes = vec![];
         let mut node = 0;
 
-        let mut buf = vec![0; len];
-        // If we crash and it happens to be that tombstones map to same spot as different data,
-        // then we will delete data we should keep. Is this true still?
-        while let Ok(bytes) = self.popper.pop(&mut buf) {
-            assert!(bytes == len, "invalid tombstone length");
-            let tomb =
-                Tombstone::decode(&mut Cursor::new(&mut buf)).expect("failed to decode tombstone");
+        loop {
+            let mut buf = self.pool.acquire().expect("failed to acquire buffer");
 
-            if nodes.is_empty() {
-                nodes.push(vec![]);
-            }
+            // If we crash and it happens to be that tombstones map to same spot as different data,
+            // then we will delete data we should keep. Is this true still?
+            if let Ok(data) = self.popper.pop(&mut buf) {
+                let data = data.into_inner();
+                assert!(data.len() == TOMBSTONE_LEN, "invalid tombstone length");
+                let tomb = Tombstone::decode(&mut Cursor::new(data.data().as_slice()))
+                    .expect("failed to decode tombstone");
 
-            if nodes[node].is_empty() {
-                nodes[node].push(tomb);
-            } else {
-                let last = nodes[node].last().expect("no tombstones in node");
-                if tomb.file == last.file {
+                if nodes.is_empty() {
+                    nodes.push(vec![]);
+                }
+
+                if nodes[node].is_empty() {
                     nodes[node].push(tomb);
                 } else {
-                    node += 1;
-                    nodes.push(vec![]);
-                    nodes[node].push(tomb);
+                    let last = nodes[node].last().expect("no tombstones in node");
+                    if tomb.file == last.file {
+                        nodes[node].push(tomb);
+                    } else {
+                        node += 1;
+                        nodes.push(vec![]);
+                        nodes[node].push(tomb);
+                    }
                 }
+            } else {
+                break;
             }
         }
 
