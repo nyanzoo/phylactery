@@ -4,7 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use necronomicon::{Decode, Encode};
+use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
 use crate::{buffer::Buffer, Error};
 
@@ -76,12 +76,12 @@ impl<R> Decode<R> for Node
 where
     R: Read,
 {
-    fn decode(buf: &mut R) -> Result<Self, necronomicon::Error>
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
     where
         Self: Sized,
     {
-        let next = usize::decode(buf)?;
-        let prev = usize::decode(buf)?;
+        let next = usize::decode(reader)?;
+        let prev = usize::decode(reader)?;
         Ok(Node { next, prev })
     }
 }
@@ -121,10 +121,24 @@ where
         Ok(t)
     }
 
+    pub fn data_owned<'a, T, O>(&'a self, buffer: &mut O) -> Result<T, Error>
+    where
+        T: DecodeOwned<Cursor<&'a [u8]>, O>,
+        O: Owned,
+    {
+        let t = self.buffer.decode_at_owned(
+            self.data_start,
+            self.data_end - self.data_start,
+            buffer,
+        )?;
+        Ok(t)
+    }
+
     pub fn update<'a, T>(&'a mut self, t: &T) -> Result<(), Error>
     where
         T: Encode<Cursor<&'a mut [u8]>>,
     {
+        log::trace!("data_start: {}, data_end: {}", self.data_start, self.data_end);
         self.buffer
             .encode_at(self.data_start, self.data_end - self.data_start, t)?;
         Ok(())
@@ -171,18 +185,20 @@ where
     }
 }
 
-pub(crate) struct FixedSizeAllocator<B, const DATA_SIZE: usize>
+// TODO: drop the const and make it a parameter to new. This way we can have it be parameterized
+pub(crate) struct FixedSizeAllocator<B>
 where
     B: Buffer,
 {
     buffer: Rc<B>,
+    data_size: usize,
 }
 
-impl<B, const DATA_SIZE: usize> FixedSizeAllocator<B, DATA_SIZE>
+impl<B> FixedSizeAllocator<B>
 where
     B: Buffer,
 {
-    pub(crate) fn new(buffer: B) -> Result<Self, Error> {
+    pub(crate) fn new(buffer: B, data_size: usize) -> Result<Self, Error> {
         // sentinel node is first usize and always points to first
         // available node.
         let mut sentinel = buffer.decode_at::<Sentinel>(0, SENTINEL_SIZE)?;
@@ -195,7 +211,7 @@ where
             let mut next = sentinel.next as usize;
             while ((next + NODE_SIZE) as u64) < buffer.capacity() {
                 let pos = next;
-                next += NODE_SIZE + DATA_SIZE;
+                next += NODE_SIZE + data_size;
                 let node = Node { next, prev };
                 prev = pos;
                 buffer
@@ -206,6 +222,7 @@ where
 
         Ok(Self {
             buffer: Rc::new(buffer),
+            data_size,
         })
     }
 
@@ -216,7 +233,7 @@ where
         let mut start = SENTINEL_SIZE;
         while ((start + NODE_SIZE) as u64) <= self.capacity() {
             let pos = start;
-            start += NODE_SIZE + DATA_SIZE;
+            start += NODE_SIZE + self.data_size;
 
             let node = self.decode_node(pos)?;
 
@@ -225,8 +242,8 @@ where
             }
 
             // We skip a node + data above, so just rollback the data to be at node offset and get correct data offsets.
-            let data_start = start - DATA_SIZE;
-            let data_end = data_start + DATA_SIZE;
+            let data_start = start - self.data_size;
+            let data_end = data_start + self.data_size;
 
             let free = Entry {
                 data_start,
@@ -257,7 +274,7 @@ where
         let mut next = self.decode_node(next_free)?;
 
         let data_start = next_free + NODE_DATA_OFFSET;
-        let data_end = data_start + DATA_SIZE;
+        let data_end = data_start + self.data_size;
 
         let free = Entry {
             data_start,
@@ -321,14 +338,14 @@ mod tests {
 
     #[test]
     fn alloc_free() {
-        const DATA_SIZE: usize = 8;
+        let data_size = 8;
 
         let alloc =
-            FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(InMemBuffer::new(1024)).unwrap();
+            FixedSizeAllocator::<InMemBuffer>::new(InMemBuffer::new(1024), data_size).unwrap();
 
         let mut entries = vec![];
 
-        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + DATA_SIZE);
+        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + data_size);
         for _ in 0..max_entries {
             let entry = alloc.alloc().unwrap();
             entries.push(entry);
@@ -351,14 +368,14 @@ mod tests {
 
     #[test]
     fn recover() {
-        const DATA_SIZE: usize = 8;
-        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + DATA_SIZE);
+        let data_size = 8;
+        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + data_size);
 
         let buffer = InMemBuffer::new(1024);
         let new_buffer;
         let mut entries = vec![];
         {
-            let alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(buffer).unwrap();
+            let alloc = FixedSizeAllocator::<InMemBuffer>::new(buffer, data_size).unwrap();
 
             for _ in 0..max_entries {
                 let entry = alloc.alloc().unwrap();
@@ -377,8 +394,9 @@ mod tests {
             free.update(&42u64).unwrap();
         }
 
-        let mut alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(
+        let mut alloc = FixedSizeAllocator::<InMemBuffer>::new(
             unsafe { &*Rc::into_raw(new_buffer) }.clone(),
+            data_size,
         )
         .unwrap();
 

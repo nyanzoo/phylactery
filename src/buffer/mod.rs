@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use necronomicon::{Decode, Encode};
+use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
 mod mem;
 pub use mem::InMemBuffer;
@@ -31,6 +31,33 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     fn decode_at<'a, T>(&'a self, off: usize, len: usize) -> Result<T, Error>
     where
         T: Decode<Cursor<&'a [u8]>>;
+
+    /// # Description
+    /// Given an offset and length, decode a value of type `T` and use owned buffer to manage the memory of T.
+    ///
+    /// This function will decode a value of type `T` from the given `self` buffer
+    /// at the given `off`set and `len`gth. It will do this by calling `DecodeOwned::decode_owned`
+    /// on the given `self` buffer with the given `off`set and `len`gth.
+    ///
+    /// # Arguments
+    /// * `off`: The offset in the buffer to start decoding at.
+    /// * `len`: The length of the buffer to decode.
+    ///
+    /// # Errors
+    /// This function will return an error if the data cannot be decoded from the buffer.
+    /// See [`error::Error`] for more details.
+    ///
+    /// # Returns
+    /// The decoded value of type `T`.
+    fn decode_at_owned<'a, T, O>(
+        &'a self,
+        off: usize,
+        len: usize,
+        buffer: &mut O,
+    ) -> Result<T, Error>
+    where
+        O: Owned,
+        T: DecodeOwned<Cursor<&'a [u8]>, O>;
 
     /// # Description
     /// Encodes the given `data` at the given `off`set and `len`gth.

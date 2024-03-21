@@ -45,6 +45,9 @@ pub enum Error {
     #[error("key not found: {0}")]
     KeyNotFound(String),
 
+    #[error("key too long: {key:?} > {max_key_length}")]
+    KeyTooLong { key: Vec<u8>, max_key_length: usize },
+
     #[error("metadata crc mismatch: {expected} != {actual}")]
     MetadataCrcMismatch { expected: u32, actual: u32 },
 
@@ -56,6 +59,13 @@ pub enum Error {
 
     #[error("not read data")]
     NotReadData,
+
+    #[error("out of bounds {offset} + {len} > {capacity}")]
+    OutOfBounds {
+        offset: usize,
+        len: usize,
+        capacity: usize,
+    },
 
     #[error("read beyond capacity: {0} + {1} > {2}")]
     ReadBeyondCapacity(u64, u64, u64),

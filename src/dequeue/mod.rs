@@ -1,7 +1,7 @@
 use std::{
     fs::{create_dir_all, OpenOptions},
-    io::{Cursor, Read, Write},
-    os::unix::prelude::FileExt,
+    io::{BufReader, Read, Seek, SeekFrom, Write},
+    os::unix::fs::FileExt,
     path::Path,
     ptr::NonNull,
     sync::{
@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-use necronomicon::Decode;
+use necronomicon::{BinaryData, Decode, DecodeOwned, Owned, Shared};
 
 use crate::{
     buffer::InMemBuffer,
@@ -27,20 +27,14 @@ pub(crate) struct File {
     index: u64,
 }
 
-pub struct BackingDequeueNodeGenerator<S>
-where
-    S: AsRef<str>,
-{
+pub struct BackingDequeueNodeGenerator {
     read_index: AtomicU64,
     write_index: AtomicU64,
-    dir: S,
+    dir: String,
 }
 
-impl<S> BackingDequeueNodeGenerator<S>
-where
-    S: AsRef<str>,
-{
-    pub fn new(dir: S) -> Result<Self, Error> {
+impl BackingDequeueNodeGenerator {
+    pub fn new(dir: impl AsRef<str>) -> Result<Self, Error> {
         let last = {
             let dir = Path::new(dir.as_ref());
             if !dir.exists() {
@@ -65,13 +59,13 @@ where
         Ok(Self {
             read_index: AtomicU64::new(0),
             write_index: AtomicU64::new(last),
-            dir,
+            dir: dir.as_ref().to_string(),
         })
     }
 
     pub(crate) fn next_read(&self) -> Result<File, Error> {
         let index = self.read_index.load(Ordering::Acquire);
-        let paths = format!("{}/{}.bin", self.dir.as_ref(), index);
+        let paths = format!("{}/{}.bin", self.dir, index);
         let path = Path::new(&paths);
         if path.exists() {
             let file = OpenOptions::new().read(true).open(path)?;
@@ -90,7 +84,7 @@ where
 
     pub(crate) fn next_write(&self) -> Result<File, Error> {
         let index = self.write_index.fetch_add(1, Ordering::AcqRel);
-        let path = format!("{}/{}.bin", self.dir.as_ref(), index);
+        let path = format!("{}/{}.bin", self.dir, index);
         let file = OpenOptions::new().append(true).create(true).open(path)?;
 
         Ok(File { file, index })
@@ -98,7 +92,7 @@ where
 
     pub fn init_write(&self, buffer: &mut InMemBuffer) -> Result<(), Error> {
         let index = self.write_index.load(Ordering::Acquire);
-        let path = format!("{}/{}.bin", self.dir.as_ref(), index);
+        let path = format!("{}/{}.bin", self.dir, index);
         let path = Path::new(&path);
         if path.exists() {
             let file = OpenOptions::new().read(true).open(path)?;
@@ -110,8 +104,11 @@ where
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum Pop {
-    Popped,
+pub enum Pop<S>
+where
+    S: Shared,
+{
+    Popped(Data<S>),
     WaitForFlush,
 }
 
@@ -123,21 +120,15 @@ pub struct Push {
     pub crc: u32,
 }
 
-struct Inner<S>
-where
-    S: AsRef<str>,
-{
+struct Inner {
     read: AtomicPtr<DequeueNode<InMemBuffer>>,
     write: AtomicPtr<DequeueNode<InMemBuffer>>,
-    backing_generator: BackingDequeueNodeGenerator<S>,
+    backing_generator: BackingDequeueNodeGenerator,
     node_size: u64,
     version: Version,
 }
 
-impl<S> Drop for Inner<S>
-where
-    S: AsRef<str>,
-{
+impl Drop for Inner {
     fn drop(&mut self) {
         let read = self.read.load(Ordering::Acquire);
         let write = self.write.load(Ordering::Acquire);
@@ -162,11 +153,8 @@ where
 // write to disk. if we hit the disk limit, we should error.
 // pop needs to read from disk and fall back to read from next node if node is empty.
 // this is because we could be writing in mem and not have written to disk yet.
-impl<S> Inner<S>
-where
-    S: AsRef<str>,
-{
-    pub fn new(dir: S, node_size: u64, version: Version) -> Result<Self, Error> {
+impl Inner {
+    pub fn new(dir: impl AsRef<str>, node_size: u64, version: Version) -> Result<Self, Error> {
         let backing_generator = BackingDequeueNodeGenerator::new(dir)?;
 
         // Need to read first and last file to get the metadata and correct ptrs.
@@ -185,7 +173,10 @@ where
         })
     }
 
-    pub fn pop(&self, buf: &mut [u8]) -> Result<Pop, Error> {
+    pub fn pop<O>(&self, buf: &mut O) -> Result<Pop<O::Shared>, Error>
+    where
+        O: Owned,
+    {
         let mut read_ptr = self.read.load(Ordering::Acquire);
 
         if read_ptr.is_null() {
@@ -201,7 +192,7 @@ where
         let read = unsafe { read.as_ref() };
 
         match read.pop(buf) {
-            Ok(_) => Ok(Pop::Popped),
+            Ok(data) => Ok(Pop::Popped(data)),
             // We caught up to the write ptr in node.
             Err(Error::NodeFull) => {
                 let next_ptr = match self.next_read_ptr() {
@@ -213,27 +204,30 @@ where
                 let read = NonNull::new(next_ptr).expect("valid ptr");
                 let read = unsafe { read.as_ref() };
 
-                read.pop(buf)?;
+                let data = read.pop(buf)?;
 
                 // drop old node.
                 unsafe { drop(Box::from_raw(read_ptr)) };
                 // put in new node.
                 self.read.store(next_ptr, Ordering::Release);
 
-                Ok(Pop::Popped)
+                Ok(Pop::Popped(data))
             }
             Err(e) => Err(e),
         }
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
+    where
+        S: Shared,
+    {
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
             .expect("write ptr should never be null, it is initialized in new");
 
         let write = unsafe { write.as_ref() };
-        match write.push(buf) {
+        match write.push(buf.clone()) {
             Ok(node::Push { offset, len, crc }) => Ok(Push {
                 file: self.backing_generator.write_idx(),
                 offset,
@@ -294,28 +288,29 @@ where
         Ok(())
     }
 
-    pub(crate) fn get(
+    pub(crate) fn get<O>(
         &self,
         file: u64,
         offset: u64,
-        buf: &mut Vec<u8>,
+        buf: &mut O,
         version: Version,
-    ) -> Result<Data, Error> {
-        let mut meta_buf = vec![0; Metadata::struct_size(version) as usize];
+    ) -> Result<Data<O::Shared>, Error>
+    where
+        O: Owned,
+    {
+        let file = OpenOptions::new()
+            .read(true)
+            .open(format!("{}/{}.bin", self.backing_generator.dir, file))?;
+        let mut buf_reader = BufReader::new(file);
 
-        let file = OpenOptions::new().read(true).open(format!(
-            "{}/{}.bin",
-            self.backing_generator.dir.as_ref(),
-            file
-        ))?;
-        file.read_at(&mut meta_buf, offset)?;
-
-        let meta = Metadata::decode(&mut Cursor::new(&mut meta_buf))?;
+        let meta = Metadata::decode(&mut buf_reader)?;
         meta.verify()?;
 
-        buf.resize(meta.data_size() as usize, 0);
-        file.read_at(buf, offset + Metadata::struct_size(version) as u64)?;
-        let data = Data::decode(&mut Cursor::new(buf))?;
+        buf_reader.seek(SeekFrom::Start(
+            offset + Metadata::struct_size(version) as u64,
+        ))?;
+
+        let data = Data::decode_owned(&mut buf_reader, buf)?;
 
         Ok(data)
     }
@@ -337,28 +332,23 @@ where
 
 // Good idea: treat the file not found err for read as a special case for yielding for writes.
 // Also add a flush method to be called at end of writes.
-pub struct Dequeue<S>(Arc<Inner<S>>)
-where
-    S: AsRef<str>;
+pub struct Dequeue(Arc<Inner>);
 
-impl<S> Clone for Dequeue<S>
-where
-    S: AsRef<str>,
-{
+impl Clone for Dequeue {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<S> Dequeue<S>
-where
-    S: AsRef<str>,
-{
-    pub fn new(dir: S, node_size: u64, version: Version) -> Result<Self, Error> {
+impl Dequeue {
+    pub fn new(dir: impl AsRef<str>, node_size: u64, version: Version) -> Result<Self, Error> {
         Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
+    where
+        S: Shared,
+    {
         self.0.push(buf)
     }
 
@@ -366,28 +356,37 @@ where
         self.0.flush()
     }
 
-    pub fn pop(&self, buf: &mut [u8]) -> Result<Pop, Error> {
+    pub fn pop<O>(&self, buf: &mut O) -> Result<Pop<O::Shared>, Error>
+    where
+        O: Owned,
+    {
         self.0.pop(buf)
     }
 
-    pub(crate) fn get(&self, file: u64, offset: u64, buf: &mut Vec<u8>) -> Result<Data, Error> {
+    pub(crate) fn get<O>(
+        &self,
+        file: u64,
+        offset: u64,
+        buf: &mut O,
+    ) -> Result<Data<O::Shared>, Error>
+    where
+        O: Owned,
+    {
         self.0.get(file, offset, buf, self.0.version)
     }
 }
 
-pub struct Pusher<S>(Dequeue<S>)
-where
-    S: AsRef<str>;
+pub struct Pusher(Dequeue);
 
-impl<S> Pusher<S>
-where
-    S: AsRef<str>,
-{
-    pub fn new(dequeue: Dequeue<S>) -> Self {
+impl Pusher {
+    pub fn new(dequeue: Dequeue) -> Self {
         Self(dequeue)
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
+    where
+        S: Shared,
+    {
         self.0.push(buf)
     }
 
@@ -396,27 +395,26 @@ where
     }
 }
 
-pub struct Popper<S>(Dequeue<S>)
-where
-    S: AsRef<str>;
+pub struct Popper(Dequeue);
 
-impl<S> Popper<S>
-where
-    S: AsRef<str>,
-{
-    pub fn new(dequeue: Dequeue<S>) -> Self {
+impl Popper {
+    pub fn new(dequeue: Dequeue) -> Self {
         Self(dequeue)
     }
 
-    pub fn pop(&self, buf: &mut [u8]) -> Result<Pop, Error> {
+    pub fn pop<O>(&self, buf: &mut O) -> Result<Pop<O::Shared>, Error>
+    where
+        O: Owned,
+    {
         self.0.pop(buf)
     }
 }
 
-pub fn dequeue<S>(dir: S, node_size: u64, version: Version) -> Result<(Pusher<S>, Popper<S>), Error>
-where
-    S: AsRef<str>,
-{
+pub fn dequeue(
+    dir: impl AsRef<str>,
+    node_size: u64,
+    version: Version,
+) -> Result<(Pusher, Popper), Error> {
     let dequeue = Dequeue::new(dir, node_size, version)?;
 
     let pusher = Pusher::new(dequeue.clone());
@@ -435,6 +433,8 @@ mod test {
 
     use matches::assert_matches;
 
+    use necronomicon::{binary_data, Pool, PoolImpl, Shared};
+
     use crate::entry::Version;
 
     use super::{dequeue, Dequeue, Pop};
@@ -444,13 +444,18 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
 
-        let mut buf = [0u8; 1024];
-        dequeue.push(b"hello kitties").unwrap();
+        let pool = PoolImpl::new(1024, 1024);
+        let mut buf = pool.acquire().unwrap();
+        dequeue.push(binary_data(b"hello kitties")).unwrap();
         assert_matches!(dequeue.pop(&mut buf), Ok(Pop::WaitForFlush));
         dequeue.flush().unwrap();
-        assert_matches!(dequeue.pop(&mut buf), Ok(Pop::Popped));
+        let res = dequeue.pop(&mut buf);
+        assert_matches!(res, Ok(Pop::Popped(_)));
 
-        assert_eq!(&buf[..13], b"hello kitties");
+        let Pop::Popped(data) = res.unwrap() else {
+            panic!("expected Pop::Popped");
+        };
+        assert_eq!(&data.into_inner().data().as_slice(), b"hello kitties");
     }
 
     #[test]
@@ -458,15 +463,24 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
 
-        dequeue.push(b"hello kitties").unwrap();
-        dequeue.push(b"hello kitties").unwrap();
+        dequeue.push(binary_data(b"hello kitties")).unwrap();
+        dequeue.push(binary_data(b"hello kitties")).unwrap();
         dequeue.flush().unwrap();
 
-        let mut buf = [0u8; 1024];
-        dequeue.pop(&mut buf).unwrap();
-        dequeue.pop(&mut buf).unwrap();
+        let pool = PoolImpl::new(1024, 1024);
+        let mut buf = pool.acquire().unwrap();
+        let pop = dequeue.pop(&mut buf).unwrap();
+        let Pop::Popped(data) = pop else {
+            panic!("expected Pop::Popped");
+        };
+        assert_eq!(&data.into_inner().data().as_slice(), b"hello kitties");
 
-        assert_eq!(&buf[..13], b"hello kitties");
+        let mut buf = pool.acquire().unwrap();
+        let pop = dequeue.pop(&mut buf).unwrap();
+        let Pop::Popped(data) = pop else {
+            panic!("expected Pop::Popped");
+        };
+        assert_eq!(&data.into_inner().data().as_slice(), b"hello kitties");
     }
 
     #[test]
@@ -476,18 +490,22 @@ mod test {
 
         for i in 0..100 {
             dequeue
-                .push(format!("hello kitties {i}").as_bytes())
+                .push(binary_data(&format!("hello kitties {i}").as_bytes()))
                 .unwrap();
         }
         dequeue.flush().unwrap();
 
+        let pool = PoolImpl::new(1024, 1024);
         // Because we read from the node in mem we also need to know to skip the backing buffer as well...
         for i in 0..100 {
             let expected = format!("hello kitties {i}");
-            let mut buf = [0u8; 1024];
-            dequeue.pop(&mut buf).unwrap();
+            let mut buf = pool.acquire().unwrap();
+            let pop = dequeue.pop(&mut buf).unwrap();
 
-            assert_eq!(&buf[..expected.len()], expected.as_bytes());
+            let Pop::Popped(data) = pop else {
+                panic!("expected Pop::Popped");
+            };
+            assert_eq!(data.into_inner().data().as_slice(), expected.as_bytes());
         }
     }
 
@@ -499,19 +517,22 @@ mod test {
 
         spawn(move || {
             for i in 0..100 {
-                tx.push(format!("hello kitties {i}").as_bytes()).unwrap();
+                _ = tx.push(binary_data(&format!("hello kitties {i}").as_bytes()));
             }
             tx.flush().unwrap();
         });
 
+        let pool = PoolImpl::new(1024, 1024);
         for i in 0..100 {
             let expected = format!("hello kitties {i}");
-            let mut buf = [0u8; 1024];
-            while let Ok(Pop::WaitForFlush) = rx.pop(&mut buf) {
+            let mut buf = pool.acquire().unwrap();
+            loop {
+                if let Ok(Pop::Popped(data)) = rx.pop(&mut buf) {
+                    assert_eq!(data.into_inner().data().as_slice(), expected.as_bytes());
+                    break;
+                }
                 sleep(Duration::from_millis(1));
             }
-
-            assert_eq!(&buf[..expected.len()], expected.as_bytes());
         }
     }
 
@@ -520,7 +541,8 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
 
-        let mut buf = [0u8; 1024];
+        let pool = PoolImpl::new(1024, 1024);
+        let mut buf = pool.acquire().unwrap();
         assert_matches!(dequeue.pop(&mut buf), Ok(Pop::WaitForFlush));
     }
 }

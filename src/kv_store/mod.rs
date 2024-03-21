@@ -2,11 +2,11 @@ use std::{
     collections::BTreeMap,
     io::{Read, Write},
     mem::size_of,
-    path::Path,
-    vec,
 };
 
-use necronomicon::{kv_store_codec::Key, Decode, Encode};
+use necronomicon::{
+    BinaryData, Decode, DecodeOwned, Encode, Owned, Pool, PoolImpl, Shared, SharedImpl,
+};
 
 use crate::{
     alloc::{Entry, FixedSizeAllocator},
@@ -22,9 +22,12 @@ pub use graveyard::Graveyard;
 use graveyard::Tombstone;
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum Lookup<'a> {
+pub enum Lookup<S>
+where
+    S: Shared,
+{
     Absent,
-    Found(Data<'a>),
+    Found(Data<S>),
 }
 
 pub enum MetaState {
@@ -65,18 +68,29 @@ where
     }
 }
 
-struct Metadata {
+struct Metadata<S>
+where
+    S: Shared,
+{
     crc: u32,
     file: u64,
     offset: u64,
     len: u64,
-    key: Key,
+    key: BinaryData<S>,
     // We set the tombstone and do not accept additional data until we have compacted.
     state: MetaState,
 }
 
-impl From<Metadata> for Tombstone {
-    fn from(val: Metadata) -> Self {
+// NOTE: keep in sync with `Metadata` struct
+const fn metadata_block_size(max_key_size: usize) -> usize {
+    size_of::<u32>() + size_of::<u64>() * 3 + max_key_size + size_of::<MetaState>()
+}
+
+impl<S> From<Metadata<S>> for Tombstone
+where
+    S: Shared,
+{
+    fn from(val: Metadata<S>) -> Self {
         Self {
             crc: val.crc,
             file: val.file,
@@ -86,11 +100,10 @@ impl From<Metadata> for Tombstone {
     }
 }
 
-const METADATA_SIZE: usize = size_of::<Metadata>();
-
-impl<W> Encode<W> for Metadata
+impl<W, S> Encode<W> for Metadata<S>
 where
     W: Write,
+    S: Shared,
 {
     fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
         self.crc.encode(writer)?;
@@ -103,11 +116,12 @@ where
     }
 }
 
-impl<R> Decode<R> for Metadata
+impl<R, O> DecodeOwned<R, O> for Metadata<O::Shared>
 where
     R: Read,
+    O: Owned,
 {
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    fn decode_owned(reader: &mut R, buffer: &mut O) -> Result<Self, necronomicon::Error>
     where
         Self: Sized,
     {
@@ -115,7 +129,7 @@ where
         let file = u64::decode(reader)?;
         let offset = u64::decode(reader)?;
         let len = u64::decode(reader)?;
-        let key = Key::decode(reader)?;
+        let key = BinaryData::decode_owned(reader, buffer)?;
         let state = MetaState::decode(reader)?;
         Ok(Metadata {
             crc,
@@ -144,48 +158,58 @@ impl Iterator for DeconstructIter {
 // 2. The data layer is where we store [crc, key length, key, value length, value]
 pub struct KVStore<S>
 where
-    S: AsRef<str>,
+    S: Shared,
 {
     // store key metadata
-    lookup: BTreeMap<Key, Entry<MmapBuffer>>,
+    lookup: BTreeMap<BinaryData<S>, Entry<MmapBuffer>>,
     // meta file
-    meta: FixedSizeAllocator<MmapBuffer, METADATA_SIZE>,
+    meta: FixedSizeAllocator<MmapBuffer>,
     // data files
-    dequeue: Dequeue<S>,
+    dequeue: Dequeue,
     // graveyard pusher
     graveyard_pusher: ring_buffer::Pusher<MmapBuffer>,
 
     // directories for data and meta
     data_path: String,
     meta_path: String,
+
+    // max key size allowed
+    max_key_size: usize,
+
+    // tombstone pool
+    tombstone_pool: PoolImpl,
 }
 
 // The expectation is that this is single threaded.
 impl<S> KVStore<S>
 where
-    S: AsRef<str>,
+    S: Shared,
 {
-    pub fn new<P>(
-        meta_path: P,
+    pub fn new<O>(
+        meta_path: String,
         meta_size: u64,
-        data_path: S,
+        max_key_size: usize,
+        data_path: String,
         node_size: u64,
         version: Version,
         pusher: ring_buffer::Pusher<MmapBuffer>,
+        buffer: &mut O,
     ) -> Result<Self, Error>
     where
-        P: AsRef<Path>,
+        O: Owned<Shared = S>,
     {
-        let meta_path_saved = format!("{:?}", meta_path.as_ref());
-        let data_path_saved = data_path.as_ref().to_string();
+        let meta_path_saved = meta_path.clone();
+        let data_path_saved = data_path.clone();
+
+        let meta_block_size = metadata_block_size(max_key_size);
 
         let meta = MmapBuffer::new(meta_path, meta_size)?;
-        let mut meta = FixedSizeAllocator::new(meta)?;
+        let mut meta = FixedSizeAllocator::new(meta, meta_block_size)?;
         let dequeue = Dequeue::new(data_path, node_size, version)?;
 
         let mut lookup = BTreeMap::new();
         for entry in meta.recovered_entries()? {
-            let Metadata { key, .. } = entry.data()?;
+            let Metadata { key, .. } = entry.data_owned(buffer)?;
 
             lookup.insert(key, entry);
         }
@@ -198,6 +222,10 @@ where
 
             data_path: data_path_saved.to_owned(),
             meta_path: meta_path_saved.to_owned(),
+
+            max_key_size,
+
+            tombstone_pool: PoolImpl::new(graveyard::TOMBSTONE_LEN, 1024 * 1024),
         })
     }
 
@@ -224,11 +252,14 @@ where
         file.write_all(contents).expect("failed to write file");
     }
 
-    pub fn delete(&mut self, key: &Key) -> Result<(), Error> {
+    pub fn delete<O>(&mut self, key: &BinaryData<S>, buffer: &mut O) -> Result<(), Error>
+    where
+        O: Owned<Shared = S>,
+    {
         if let Some(mut entry) = self.lookup.remove(key) {
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone.
-            let mut meta = entry.data::<Metadata>()?;
+            let mut meta: Metadata<S> = entry.data_owned(buffer)?;
 
             match meta.state {
                 MetaState::Full => {}
@@ -244,10 +275,9 @@ where
             entry.update(&meta)?;
 
             // needs to be tombstone!
-            let tombstone: Tombstone = meta.into();
-            let mut buf = vec![];
-            tombstone.encode(&mut buf)?;
-            self.graveyard_pusher.push(&buf)?;
+
+            let tombstone = self.tombstone_binary_data(meta);
+            self.graveyard_pusher.push(tombstone)?;
         }
 
         Ok(())
@@ -287,9 +317,12 @@ where
     ///
     /// # Errors
     /// See [`Error`].
-    pub fn get(&mut self, key: &Key, buf: &mut Vec<u8>) -> Result<Lookup, Error> {
+    pub fn get<O>(&mut self, key: &BinaryData<S>, buf: &mut O) -> Result<Lookup<S>, Error>
+    where
+        O: Owned<Shared = S>,
+    {
         if let Some(entry) = self.lookup.get(key) {
-            let meta = entry.data::<Metadata>()?;
+            let meta: Metadata<<O as Owned>::Shared> = entry.data_owned(buf)?;
 
             let Metadata {
                 crc: _, // TODO: verify crc
@@ -345,18 +378,31 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn insert(&mut self, key: Key, value: &[u8]) -> Result<(), Error> {
+    pub fn insert<O>(
+        &mut self,
+        key: BinaryData<S>,
+        value: BinaryData<S>,
+        buffer: &mut O,
+    ) -> Result<(), Error>
+    where
+        O: Owned<Shared = S>,
+    {
+        if key.len() > self.max_key_size {
+            return Err(Error::KeyTooLong {
+                key: key.data().as_slice().to_vec(),
+                max_key_length: self.max_key_size,
+            });
+        }
+
         // We need to tombstone old entry if it exists.
         if let Some(entry) = self.lookup.remove(&key) {
-            let mut meta = entry.data::<Metadata>()?;
+            let mut meta: Metadata<S> = entry.data_owned(buffer)?;
 
             meta.state = MetaState::Compacting;
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone.
-            let tombstone: Tombstone = meta.into();
-            let mut buf = vec![];
-            tombstone.encode(&mut buf)?;
-            self.graveyard_pusher.push(&buf)?;
+            let tombstone = self.tombstone_binary_data(meta);
+            self.graveyard_pusher.push(tombstone)?;
         }
 
         // Maybe we should have meta also be a ring buffer?
@@ -378,7 +424,7 @@ where
             offset,
             len,
             state: MetaState::Full,
-            key,
+            key: key.clone(),
         };
 
         entry.update(&metadata)?;
@@ -387,19 +433,30 @@ where
 
         Ok(())
     }
+
+    fn tombstone_binary_data(&self, metadata: Metadata<S>) -> BinaryData<SharedImpl> {
+        let tombstone: Tombstone = metadata.into();
+        let mut buffer = self.tombstone_pool.acquire().unwrap();
+        let mut buf = buffer.unfilled();
+        tombstone.encode(&mut buf).unwrap();
+        buffer.fill(graveyard::TOMBSTONE_LEN);
+        let buffer = buffer.split_at(graveyard::TOMBSTONE_LEN);
+        BinaryData::new(graveyard::TOMBSTONE_LEN, buffer.into_shared())
+    }
 }
 
 #[cfg(test)]
 mod test {
     use std::io::Write;
 
-    use necronomicon::kv_store_codec::Key;
+    use necronomicon::{binary_data, Pool, PoolImpl, SharedImpl};
+    use tempfile::TempDir;
 
     use crate::{
         buffer::MmapBuffer,
         entry::Version,
         kv_store::{Graveyard, Lookup},
-        ring_buffer::ring_buffer,
+        ring_buffer::{ring_buffer, Popper},
     };
 
     use super::KVStore;
@@ -407,70 +464,57 @@ mod test {
     #[test]
     fn test_put_get() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let path = temp_dir.into_path();
 
-        let mmap_path = path.join("mmap.bin");
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+        let pool = PoolImpl::new(1024, 1024);
 
-        let (pusher, _popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+        let (mut store, _) = test_kv_store(&temp_dir, &pool);
 
-        let meta_path = path.join("meta.bin");
-        let meta_path = meta_path.to_str().unwrap();
+        let key = binary_data(b"pets");
 
-        let data_path = path.join("data.bin");
-        let data_path = data_path.to_str().unwrap();
+        let mut owned = pool.acquire().unwrap();
 
-        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
-            .expect("KVStore::new failed");
+        store
+            .insert(key.clone(), binary_data(b"cats"), &mut owned)
+            .expect("insert failed");
 
-        let key = Key::try_from("pets").expect("key");
-
-        store.insert(key, "cats".as_bytes()).expect("insert failed");
-
-        let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
         let actual = data.into_inner();
-        assert_eq!(actual, b"cats");
+        assert_eq!(actual, binary_data(b"cats"));
     }
 
     #[test]
     fn test_put_get_delete() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let path = temp_dir.into_path();
 
-        let mmap_path = path.join("mmap.bin");
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+        let pool = PoolImpl::new(1024, 1024);
 
-        let (pusher, _popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+        let (mut store, _) = test_kv_store(&temp_dir, &pool);
 
-        let meta_path = path.join("meta.bin");
-        let meta_path = meta_path.to_str().unwrap();
+        let key = binary_data(b"pets");
 
-        let data_path = path.join("data.bin");
-        let data_path = data_path.to_str().unwrap();
+        let mut owned = pool.acquire().unwrap();
 
-        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
-            .expect("KVStore::new failed");
+        store
+            .insert(key.clone(), binary_data(b"cats"), &mut owned)
+            .expect("insert failed");
 
-        let key = Key::try_from("pets").expect("key");
-
-        store.insert(key, "cats".as_bytes()).expect("insert failed");
-
-        let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
         let actual = data.into_inner();
-        assert_eq!(actual, b"cats");
+        assert_eq!(actual, binary_data(b"cats"));
 
-        store.delete(&key).expect("delete failed");
+        let mut owned = pool.acquire().unwrap();
+        store.delete(&key, &mut owned).expect("delete failed");
 
-        let mut buf = vec![0; 64];
-        let Lookup::Absent = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key found");
         };
     }
@@ -478,21 +522,11 @@ mod test {
     #[test]
     fn test_graveyard() {
         let temp_dir = tempfile::tempdir().unwrap();
+        
+        let pool = PoolImpl::new(1024, 1024);
+        
+        let (mut store, popper) = test_kv_store(&temp_dir, &pool);
         let path = temp_dir.into_path();
-
-        let mmap_path = path.join("mmap.bin");
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
-
-        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
-
-        let meta_path = path.join("meta.bin");
-        let meta_path = meta_path.to_str().unwrap();
-
-        let data_path = path.join("data");
-        let data_path = data_path.to_str().unwrap();
-
-        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
-            .expect("KVStore::new failed");
 
         let pclone = path.clone();
         let _ = std::thread::spawn(move || {
@@ -500,26 +534,33 @@ mod test {
             graveyard.bury(1);
         });
 
-        let key = Key::try_from("pets").expect("key");
+        let key = binary_data(b"pets");
 
-        store.insert(key, "cats".as_bytes()).expect("insert failed");
+        let mut owned = pool.acquire().unwrap();
+        store
+            .insert(key.clone(), binary_data(b"cats"), &mut owned)
+            .expect("insert failed");
 
-        store.insert(key, "dogs".as_bytes()).expect("insert failed");
+        let mut owned = pool.acquire().unwrap();
+        store
+            .insert(key.clone(), binary_data(b"dogs"), &mut owned)
+            .expect("insert failed");
 
-        let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
         let actual = data.into_inner();
-        assert_eq!(actual, b"dogs");
+        assert_eq!(actual, binary_data(b"dogs"));
 
-        store.delete(&key).expect("delete failed");
+        let mut owned = pool.acquire().unwrap();
+        store.delete(&key, &mut owned).expect("delete failed");
         // Wait long enough for graveyard to run
         std::thread::sleep(std::time::Duration::from_secs(5));
         // assert that the data folder is empty
-        let mut buf = vec![0; 64];
-        let Lookup::Absent = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
@@ -528,6 +569,38 @@ mod test {
 
         assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
         assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
+    }
+
+    fn test_kv_store(
+        temp_dir: &TempDir,
+        pool: &PoolImpl,
+    ) -> (KVStore<SharedImpl>, Popper<MmapBuffer>) {
+        let path = format!("{}", temp_dir.path().display());
+
+        let mmap_path = path.clone() + "mmap.bin";
+        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+
+        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+
+        let meta_path = path.clone() + "meta.bin";
+
+        let data_path = path + "data.bin";
+
+        let mut owned = pool.acquire().unwrap();
+
+        let store = KVStore::new(
+            meta_path,
+            1024,
+            32,
+            data_path,
+            1024,
+            Version::V1,
+            pusher,
+            &mut owned,
+        )
+        .expect("KVStore::new failed");
+
+        (store, popper)
     }
 
     #[allow(dead_code)]
