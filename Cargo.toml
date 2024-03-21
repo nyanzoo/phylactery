@@ -29,6 +29,10 @@ necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "deve
     "test",
 ] }
 
+necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop", features = [
+    "test",
+] }
+
 [[bench]]
 name = "ring_buffer"
 harness = false

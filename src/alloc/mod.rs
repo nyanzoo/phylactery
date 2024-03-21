@@ -449,14 +449,14 @@ mod tests {
 
     #[test]
     fn recover() {
-        const DATA_SIZE: usize = 8;
-        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + DATA_SIZE);
+        let data_size = 8;
+        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + data_size);
 
         let buffer = InMemBuffer::new(1024);
         let new_buffer;
         let mut entries = vec![];
         {
-            let alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(buffer).unwrap();
+            let alloc = FixedSizeAllocator::<InMemBuffer>::new(buffer, data_size).unwrap();
 
             for _ in 0..max_entries {
                 let entry = alloc.alloc().unwrap();
@@ -475,8 +475,9 @@ mod tests {
             free.update(&42u64).unwrap();
         }
 
-        let mut alloc = FixedSizeAllocator::<InMemBuffer, DATA_SIZE>::new(
+        let mut alloc = FixedSizeAllocator::<InMemBuffer>::new(
             unsafe { &*Rc::into_raw(new_buffer) }.clone(),
+            data_size,
         )
         .unwrap();
 

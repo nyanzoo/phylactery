@@ -217,14 +217,17 @@ impl Inner {
         }
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
+    where
+        S: Shared,
+    {
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
             .expect("write ptr should never be null, it is initialized in new");
 
         let write = unsafe { write.as_ref() };
-        match write.push(buf) {
+        match write.push(buf.clone()) {
             Ok(node::Push { offset, len, crc }) => Ok(Push {
                 file: self.backing_generator.write_idx(),
                 offset,
@@ -342,7 +345,10 @@ impl Dequeue {
         Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
+    where
+        S: Shared,
+    {
         self.0.push(buf)
     }
 
@@ -377,7 +383,10 @@ impl Pusher {
         Self(dequeue)
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
+    where
+        S: Shared,
+    {
         self.0.push(buf)
     }
 
@@ -454,8 +463,8 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
 
-        dequeue.push(b"hello kitties").unwrap();
-        dequeue.push(b"hello kitties").unwrap();
+        dequeue.push(binary_data(b"hello kitties")).unwrap();
+        dequeue.push(binary_data(b"hello kitties")).unwrap();
         dequeue.flush().unwrap();
 
         let pool = PoolImpl::new(1024, 1024);

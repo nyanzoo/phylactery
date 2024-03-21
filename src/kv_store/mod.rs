@@ -56,13 +56,14 @@ where
 mod test {
     use std::io::Write;
 
-    use necronomicon::kv_store_codec::Key;
+    use necronomicon::{binary_data, Pool, PoolImpl, SharedImpl};
+    use tempfile::TempDir;
 
     use crate::{
         buffer::MmapBuffer,
         entry::Version,
         kv_store::{Graveyard, Lookup},
-        ring_buffer::ring_buffer,
+        ring_buffer::{ring_buffer, Popper},
     };
 
     use super::KVStore;
@@ -70,70 +71,57 @@ mod test {
     #[test]
     fn test_put_get() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let path = temp_dir.into_path();
 
-        let mmap_path = path.join("mmap.bin");
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+        let pool = PoolImpl::new(1024, 1024);
 
-        let (pusher, _popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+        let (mut store, _) = test_kv_store(&temp_dir, &pool);
 
-        let meta_path = path.join("meta.bin");
-        let meta_path = meta_path.to_str().unwrap();
+        let key = binary_data(b"pets");
 
-        let data_path = path.join("data.bin");
-        let data_path = data_path.to_str().unwrap();
+        let mut owned = pool.acquire().unwrap();
 
-        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
-            .expect("KVStore::new failed");
+        store
+            .insert(key.clone(), binary_data(b"cats"), &mut owned)
+            .expect("insert failed");
 
-        let key = Key::try_from("pets").expect("key");
-
-        store.insert(key, "cats".as_bytes()).expect("insert failed");
-
-        let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
         let actual = data.into_inner();
-        assert_eq!(actual, b"cats");
+        assert_eq!(actual, binary_data(b"cats"));
     }
 
     #[test]
     fn test_put_get_delete() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let path = temp_dir.into_path();
 
-        let mmap_path = path.join("mmap.bin");
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+        let pool = PoolImpl::new(1024, 1024);
 
-        let (pusher, _popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+        let (mut store, _) = test_kv_store(&temp_dir, &pool);
 
-        let meta_path = path.join("meta.bin");
-        let meta_path = meta_path.to_str().unwrap();
+        let key = binary_data(b"pets");
 
-        let data_path = path.join("data.bin");
-        let data_path = data_path.to_str().unwrap();
+        let mut owned = pool.acquire().unwrap();
 
-        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
-            .expect("KVStore::new failed");
+        store
+            .insert(key.clone(), binary_data(b"cats"), &mut owned)
+            .expect("insert failed");
 
-        let key = Key::try_from("pets").expect("key");
-
-        store.insert(key, "cats".as_bytes()).expect("insert failed");
-
-        let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
         let actual = data.into_inner();
-        assert_eq!(actual, b"cats");
+        assert_eq!(actual, binary_data(b"cats"));
 
-        store.delete(&key).expect("delete failed");
+        let mut owned = pool.acquire().unwrap();
+        store.delete(&key, &mut owned).expect("delete failed");
 
-        let mut buf = vec![0; 64];
-        let Lookup::Absent = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key found");
         };
     }
@@ -141,21 +129,11 @@ mod test {
     #[test]
     fn test_graveyard() {
         let temp_dir = tempfile::tempdir().unwrap();
+        
+        let pool = PoolImpl::new(1024, 1024);
+        
+        let (mut store, popper) = test_kv_store(&temp_dir, &pool);
         let path = temp_dir.into_path();
-
-        let mmap_path = path.join("mmap.bin");
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
-
-        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
-
-        let meta_path = path.join("meta.bin");
-        let meta_path = meta_path.to_str().unwrap();
-
-        let data_path = path.join("data");
-        let data_path = data_path.to_str().unwrap();
-
-        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
-            .expect("KVStore::new failed");
 
         let pclone = path.clone();
         let _ = std::thread::spawn(move || {
@@ -163,26 +141,33 @@ mod test {
             graveyard.bury(1);
         });
 
-        let key = Key::try_from("pets").expect("key");
+        let key = binary_data(b"pets");
 
-        store.insert(key, "cats".as_bytes()).expect("insert failed");
+        let mut owned = pool.acquire().unwrap();
+        store
+            .insert(key.clone(), binary_data(b"cats"), &mut owned)
+            .expect("insert failed");
 
-        store.insert(key, "dogs".as_bytes()).expect("insert failed");
+        let mut owned = pool.acquire().unwrap();
+        store
+            .insert(key.clone(), binary_data(b"dogs"), &mut owned)
+            .expect("insert failed");
 
-        let mut buf = vec![0; 64];
-        let Lookup::Found(data) = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
         let actual = data.into_inner();
-        assert_eq!(actual, b"dogs");
+        assert_eq!(actual, binary_data(b"dogs"));
 
-        store.delete(&key).expect("delete failed");
+        let mut owned = pool.acquire().unwrap();
+        store.delete(&key, &mut owned).expect("delete failed");
         // Wait long enough for graveyard to run
         std::thread::sleep(std::time::Duration::from_secs(5));
         // assert that the data folder is empty
-        let mut buf = vec![0; 64];
-        let Lookup::Absent = store.get(&key, &mut buf).expect("key not found") else {
+        let mut owned = pool.acquire().unwrap();
+        let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
 
@@ -191,6 +176,38 @@ mod test {
 
         assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
         assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
+    }
+
+    fn test_kv_store(
+        temp_dir: &TempDir,
+        pool: &PoolImpl,
+    ) -> (KVStore<SharedImpl>, Popper<MmapBuffer>) {
+        let path = format!("{}", temp_dir.path().display());
+
+        let mmap_path = path.clone() + "mmap.bin";
+        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+
+        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+
+        let meta_path = path.clone() + "meta.bin";
+
+        let data_path = path + "data.bin";
+
+        let mut owned = pool.acquire().unwrap();
+
+        let store = KVStore::new(
+            meta_path,
+            1024,
+            32,
+            data_path,
+            1024,
+            Version::V1,
+            pusher,
+            &mut owned,
+        )
+        .expect("KVStore::new failed");
+
+        (store, popper)
     }
 
     #[allow(dead_code)]
