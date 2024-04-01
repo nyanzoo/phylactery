@@ -111,6 +111,7 @@ impl<B> Entry<B>
 where
     B: Buffer,
 {
+    #[cfg(test)]
     pub fn data<'a, T>(&'a self) -> Result<T, Error>
     where
         T: Decode<Cursor<&'a [u8]>>,

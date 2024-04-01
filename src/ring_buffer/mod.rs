@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     buffer::Buffer,
-    entry::{crc_check, last_metadata, Data, Metadata, Version},
+    entry::{crc_check, last_metadata, Metadata, Readable, Version, Writable},
     Error,
 };
 
@@ -37,21 +37,18 @@ where
         Ok(Self(Arc::new(Inner::new(buffer, version)?)))
     }
 
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<u64, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         self.0.push(buf)
     }
 
-    pub fn pop<O>(&self, buf: &mut O) -> Result<Data<O::Shared>, Error>
+    pub fn pop<O>(&self, buf: &mut O) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
         self.0.pop(buf)
     }
 
-    pub fn peek<O>(&self, buf: &mut O) -> Result<Data<O::Shared>, Error>
+    pub fn peek<O>(&self, buf: &mut O) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
@@ -134,10 +131,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<u64, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -150,7 +144,7 @@ where
         let len = buf.len() as u32;
         let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, len) as u64;
-        let data = Data::new(self.version, buf);
+        let data = Writable::new(self.version, buf);
         let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
 
         // If the entry is too big, we can't write.
@@ -259,7 +253,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn pop<O>(&self, buf: &mut O) -> Result<Data<O::Shared>, Error>
+    pub fn pop<O>(&self, buf: &mut O) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
@@ -286,14 +280,14 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn peek<O>(&self, buf: &mut O) -> Result<Data<O::Shared>, Error>
+    pub fn peek<O>(&self, buf: &mut O) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
         self.peek_or_pop(buf, true)
     }
 
-    fn peek_or_pop<O>(&self, buf: &mut O, peek: bool) -> Result<Data<O::Shared>, Error>
+    fn peek_or_pop<O>(&self, buf: &mut O, peek: bool) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
@@ -359,7 +353,7 @@ where
             }
             buf.fill(len);
             let left = buf.split_at(len).into_shared();
-            let binary_data = BinaryData::new(left.len(), left);
+            let binary_data = BinaryData::new(left);
 
             // it is also possible that crc is wrapped around
             let mut crc = [0u8; 4];
@@ -387,9 +381,9 @@ where
 
             read_ptr += 4;
 
-            Data::new(self.version, binary_data)
+            Readable::new(self.version, binary_data)
         } else {
-            let data: Data<O::Shared> = self.buffer.decode_at_owned(
+            let data: Readable<O::Shared> = self.buffer.decode_at_owned(
                 read_ptr as usize,
                 metadata.data_size() as usize,
                 buf,
@@ -421,10 +415,7 @@ where
         Self(buffer)
     }
 
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<u64, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         self.0.push(buf)
     }
 }
@@ -441,14 +432,14 @@ where
         Self(dequeue)
     }
 
-    pub fn pop<O>(&self, buf: &mut O) -> Result<Data<O::Shared>, Error>
+    pub fn pop<O>(&self, buf: &mut O) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
         self.0.pop(buf)
     }
 
-    pub fn peek<O>(&self, buf: &mut O) -> Result<Data<O::Shared>, Error>
+    pub fn peek<O>(&self, buf: &mut O) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
@@ -581,11 +572,11 @@ mod tests {
 
     use coverage_helper::test;
     use matches::assert_matches;
-    use necronomicon::{binary_data, Decode, DecodeOwned, Encode, Pool, PoolImpl, Shared};
+    use necronomicon::{Decode, DecodeOwned, Encode, Pool, PoolImpl, Shared};
 
     use crate::{
         buffer::{InMemBuffer, MmapBuffer},
-        entry::{Data, Metadata, Version},
+        entry::{Metadata, Readable, Version, Writable},
         Error,
     };
 
@@ -601,7 +592,7 @@ mod tests {
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         for _ in 0..5 {
-            ring_buffer.push(binary_data(b"kittens")).expect("push");
+            ring_buffer.push(b"kittens").expect("push");
         }
 
         let pool = PoolImpl::new(1024, 1024);
@@ -613,7 +604,7 @@ mod tests {
         }
 
         // We don't write the read ptr on reads, so to test we do another write.
-        ring_buffer.push(binary_data(b"kittens")).expect("push");
+        ring_buffer.push(b"kittens").expect("push");
 
         let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::Acquire);
         let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::Acquire);
@@ -647,7 +638,7 @@ mod tests {
         let buffer = InMemBuffer::new(1024);
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        ring_buffer.push(binary_data(b"kittens")).unwrap();
+        ring_buffer.push(b"kittens").unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
 
@@ -744,11 +735,11 @@ mod tests {
             .open(file)
             .expect("open file");
 
-        let data = binary_data(b"hello world");
+        let data = b"hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let mut data = Data::new(Version::V1, data);
+        let mut data = Writable::new(Version::V1, data);
         match &mut data {
-            Data::Version1(data) => data.crc = 1234567,
+            Writable::Version1(data) => data.crc = 1234567,
         }
 
         let mut buf = vec![0u8; 1024];
@@ -793,9 +784,9 @@ mod tests {
             .open(file)
             .expect("open file");
 
-        let data = binary_data(b"hello world");
+        let data = b"hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data);
+        let data = Writable::new(Version::V1, data);
 
         meta.encode(&mut file).unwrap();
         data.encode(&mut file).unwrap();
@@ -833,9 +824,9 @@ mod tests {
             .open(file)
             .expect("open file");
 
-        let data = binary_data(b"hello world");
+        let data = b"hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data);
+        let data = Writable::new(Version::V1, data);
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
@@ -879,9 +870,9 @@ mod tests {
             .open(file)
             .expect("open file");
 
-        let data = binary_data(b"hello world");
+        let data = b"hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data);
+        let data = Writable::new(Version::V1, data);
 
         file.seek(SeekFrom::Start(METADATA_SPOT as u64))
             .expect("seek to start");
@@ -931,9 +922,9 @@ mod tests {
             .open(file)
             .expect("open file");
 
-        let data = binary_data(b"hello world");
+        let data = b"hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data);
+        let data = Writable::new(Version::V1, data);
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
@@ -971,9 +962,9 @@ mod tests {
             .open(file)
             .expect("open file");
 
-        let data = binary_data(b"hello world");
+        let data = b"hello world";
         let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Data::new(Version::V1, data);
+        let data = Writable::new(Version::V1, data);
 
         let mut buf = vec![0u8; 1024];
         meta.encode(&mut Cursor::new(
@@ -1000,7 +991,7 @@ mod tests {
         let buffer = MmapBuffer::new(file, 1024).expect("buffer");
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        let data = binary_data(&[0u8; 1024_usize + 1]);
+        let data = &[0u8; 1024_usize + 1];
         assert_matches!(
             ring_buffer.push(data),
             Err(Error::EntryLargerThanBuffer { .. })
@@ -1020,7 +1011,7 @@ mod tests {
             .write_ptr
             .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
 
-        let data = binary_data(&[0u8; 40]);
+        let data = &[0u8; 40];
         assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig { .. }));
     }
 
@@ -1042,7 +1033,7 @@ mod tests {
             .read_ptr
             .fetch_add(READ_WRAP as u64, Ordering::Acquire);
 
-        let data = binary_data(&[0u8; 40]);
+        let data = &[0u8; 40];
         assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig { .. }));
     }
 
@@ -1065,7 +1056,7 @@ mod tests {
             .store(READ_WRAP as u64, Ordering::Release);
         ring_buffer.inner().has_data.store(true, Ordering::Release);
 
-        let data = binary_data(b"hello world 19");
+        let data = b"hello world 19";
         assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig { .. }));
     }
 
@@ -1076,7 +1067,7 @@ mod tests {
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
-        let data = binary_data(b"abcdefghijklmnopqrstuvwxyz");
+        let data = b"abcdefghijklmnopqrstuvwxyz";
         ring_buffer.push(data).unwrap();
 
         let mut file = OpenOptions::new()
@@ -1103,7 +1094,8 @@ mod tests {
         let pool = PoolImpl::new(1024, 1024);
 
         let mut buf = pool.acquire().expect("acquire");
-        let data = Data::decode_owned(&mut Cursor::new(&mut data[start..end]), &mut buf).unwrap();
+        let data =
+            Readable::decode_owned(&mut Cursor::new(&mut data[start..end]), &mut buf).unwrap();
         data.verify().unwrap();
         assert_eq!(
             data.into_inner().data().as_slice(),
@@ -1120,7 +1112,7 @@ mod tests {
 
         // fill buffer
         let mut i = 0;
-        while let Ok(_) = ring_buffer.push(binary_data(format!("hello {i}").as_bytes())) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
             i += 1;
         }
 
@@ -1140,7 +1132,7 @@ mod tests {
         }
 
         // fill buffer again
-        while let Ok(_) = ring_buffer.push(binary_data(format!("hello {i}").as_bytes())) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
             i += 1;
         }
 
@@ -1210,10 +1202,11 @@ mod tests {
 
         let writer = spawn(move || {
             for i in 0..100 {
-                let data = binary_data(format!("hello world {}", i).as_bytes());
+                let data = format!("hello world {}", i);
+                let data = data.as_bytes();
 
                 loop {
-                    match ring_buffer.push(data.clone()) {
+                    match ring_buffer.push(data) {
                         Ok(_) => {
                             break;
                         }

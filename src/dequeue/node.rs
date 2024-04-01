@@ -1,10 +1,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use necronomicon::{BinaryData, Owned, Shared};
+use necronomicon::Owned;
 
 use crate::{
     buffer::Buffer,
-    entry::{last_metadata, Data, Metadata, Version},
+    entry::{last_metadata, Metadata, Readable, Version, Writable},
     Error,
 };
 
@@ -87,7 +87,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn pop<O>(&self, buf: &mut O) -> Result<Data<O::Shared>, Error>
+    pub fn pop<O>(&self, buf: &mut O) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
@@ -110,7 +110,7 @@ where
 
         let start = start + len;
         let len = metadata.data_size() as usize;
-        let data: Data<O::Shared> = self.buffer.decode_at_owned(start, len, buf)?;
+        let data: Readable<O::Shared> = self.buffer.decode_at_owned(start, len, buf)?;
         data.verify()?;
 
         read_ptr = (start + len) as u64;
@@ -132,10 +132,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -146,7 +143,7 @@ where
         let entry = self.entry.load(Ordering::Acquire) + 1;
 
         let data_size = buf.len() as u32;
-        let data = Data::new(self.version, buf);
+        let data = Writable::new(self.version, buf);
         let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, data_size) as u64;
         let metadata = Metadata::new(
@@ -204,7 +201,7 @@ where
 #[cfg(test)]
 mod test {
     use matches::assert_matches;
-    use necronomicon::{binary_data, Pool, PoolImpl, Shared};
+    use necronomicon::{Pool, PoolImpl, Shared};
 
     use crate::{buffer::InMemBuffer, entry::Version};
 
@@ -226,7 +223,7 @@ mod test {
         let buffer = InMemBuffer::new(128);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
-        node.push(binary_data(b"hello world")).unwrap();
+        node.push(b"hello world").unwrap();
 
         let buffer = node.buffer;
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
@@ -242,7 +239,7 @@ mod test {
         let buffer = InMemBuffer::new(128);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
-        node.push(binary_data(b"hello world")).unwrap();
+        node.push(b"hello world").unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
         let mut owned = pool.acquire().unwrap();
@@ -256,8 +253,8 @@ mod test {
         let buffer = InMemBuffer::new(64);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
-        node.push(binary_data(b"hello world")).unwrap();
-        assert_matches!(node.push(binary_data(b"hello world")), Err(Error::NodeFull));
+        node.push(b"hello world").unwrap();
+        assert_matches!(node.push(b"hello world"), Err(Error::NodeFull));
     }
 
     #[test]
@@ -266,7 +263,7 @@ mod test {
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
         assert_matches!(
-            node.push(binary_data(&[0u8; 129])),
+            node.push(&[0u8; 129]),
             Err(Error::EntryLargerThanNode(179, 128))
         );
     }

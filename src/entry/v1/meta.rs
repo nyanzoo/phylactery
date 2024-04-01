@@ -1,9 +1,6 @@
-use std::{
-    io::{Read, Write},
-    mem::size_of,
-};
+use std::io::{Read, Write};
 
-use necronomicon::{BinaryData, Decode, DecodeOwned, Encode, Owned, Shared};
+use necronomicon::{Decode, Encode};
 
 use crate::Error;
 
@@ -144,83 +141,6 @@ impl Metadata {
         crc.update(&size.to_be_bytes());
         crc.finalize()
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Data<S>
-where
-    S: Shared,
-{
-    // The data of the entry.
-    pub(crate) data: BinaryData<S>,
-    // The crc of the data.
-    pub(crate) crc: u32,
-}
-
-impl<W, S> Encode<W> for Data<S>
-where
-    W: Write,
-    S: Shared,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.data.encode(writer)?;
-        self.crc.encode(writer)?;
-        Ok(())
-    }
-}
-
-impl<R, O> DecodeOwned<R, O> for Data<O::Shared>
-where
-    R: Read,
-    O: Owned,
-{
-    fn decode_owned(reader: &mut R, buffer: &mut O) -> Result<Self, necronomicon::Error>
-    where
-        Self: Sized,
-    {
-        let data = BinaryData::decode_owned(reader, buffer)?;
-        let crc = u32::decode(reader)?;
-        Ok(Self { data, crc })
-    }
-}
-
-impl<S> Data<S>
-where
-    S: Shared,
-{
-    pub fn new(data: BinaryData<S>) -> Self {
-        let crc = generate_crc(data.data().as_slice());
-        Self { data, crc }
-    }
-
-    pub fn data(&self) -> &BinaryData<S> {
-        &self.data
-    }
-
-    pub fn crc(&self) -> u32 {
-        self.crc
-    }
-
-    pub fn struct_size(&self) -> u32 {
-        2 + self.data.len() as u32 + size_of::<u32>() as u32
-    }
-
-    pub fn verify(&self) -> Result<(), Error> {
-        let crc = generate_crc(self.data.data().as_slice());
-        if crc != self.crc {
-            return Err(Error::DataCrcMismatch {
-                expected: self.crc,
-                actual: crc,
-            });
-        }
-        Ok(())
-    }
-}
-
-fn generate_crc(data: &[u8]) -> u32 {
-    let mut crc = crc32fast::Hasher::new();
-    crc.update(data);
-    crc.finalize()
 }
 
 #[cfg(test)]

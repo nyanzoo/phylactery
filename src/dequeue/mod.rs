@@ -10,11 +10,11 @@ use std::{
     },
 };
 
-use necronomicon::{BinaryData, Decode, DecodeOwned, Owned, Shared};
+use necronomicon::{Decode, DecodeOwned, Owned, Shared};
 
 use crate::{
     buffer::InMemBuffer,
-    entry::{Data, Metadata, Version},
+    entry::{Metadata, Readable, Version},
     Error,
 };
 
@@ -108,7 +108,7 @@ pub enum Pop<S>
 where
     S: Shared,
 {
-    Popped(Data<S>),
+    Popped(Readable<S>),
     WaitForFlush,
 }
 
@@ -217,17 +217,14 @@ impl Inner {
         }
     }
 
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
             .expect("write ptr should never be null, it is initialized in new");
 
         let write = unsafe { write.as_ref() };
-        match write.push(buf.clone()) {
+        match write.push(buf) {
             Ok(node::Push { offset, len, crc }) => Ok(Push {
                 file: self.backing_generator.write_idx(),
                 offset,
@@ -294,7 +291,7 @@ impl Inner {
         offset: u64,
         buf: &mut O,
         version: Version,
-    ) -> Result<Data<O::Shared>, Error>
+    ) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
@@ -310,7 +307,7 @@ impl Inner {
             offset + Metadata::struct_size(version) as u64,
         ))?;
 
-        let data = Data::decode_owned(&mut buf_reader, buf)?;
+        let data = Readable::decode_owned(&mut buf_reader, buf)?;
 
         Ok(data)
     }
@@ -345,10 +342,7 @@ impl Dequeue {
         Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
     }
 
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         self.0.push(buf)
     }
 
@@ -368,7 +362,7 @@ impl Dequeue {
         file: u64,
         offset: u64,
         buf: &mut O,
-    ) -> Result<Data<O::Shared>, Error>
+    ) -> Result<Readable<O::Shared>, Error>
     where
         O: Owned,
     {
@@ -383,10 +377,7 @@ impl Pusher {
         Self(dequeue)
     }
 
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         self.0.push(buf)
     }
 
@@ -433,7 +424,7 @@ mod test {
 
     use matches::assert_matches;
 
-    use necronomicon::{binary_data, Pool, PoolImpl, Shared};
+    use necronomicon::{Pool, PoolImpl, Shared};
 
     use crate::entry::Version;
 
@@ -446,7 +437,7 @@ mod test {
 
         let pool = PoolImpl::new(1024, 1024);
         let mut buf = pool.acquire().unwrap();
-        dequeue.push(binary_data(b"hello kitties")).unwrap();
+        dequeue.push(b"hello kitties").unwrap();
         assert_matches!(dequeue.pop(&mut buf), Ok(Pop::WaitForFlush));
         dequeue.flush().unwrap();
         let res = dequeue.pop(&mut buf);
@@ -463,8 +454,8 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
 
-        dequeue.push(binary_data(b"hello kitties")).unwrap();
-        dequeue.push(binary_data(b"hello kitties")).unwrap();
+        dequeue.push(b"hello kitties").unwrap();
+        dequeue.push(b"hello kitties").unwrap();
         dequeue.flush().unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
@@ -490,7 +481,7 @@ mod test {
 
         for i in 0..100 {
             dequeue
-                .push(binary_data(&format!("hello kitties {i}").as_bytes()))
+                .push(&format!("hello kitties {i}").as_bytes())
                 .unwrap();
         }
         dequeue.flush().unwrap();
@@ -517,7 +508,7 @@ mod test {
 
         spawn(move || {
             for i in 0..100 {
-                _ = tx.push(binary_data(&format!("hello kitties {i}").as_bytes()));
+                _ = tx.push(&format!("hello kitties {i}").as_bytes());
             }
             tx.flush().unwrap();
         });
