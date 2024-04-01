@@ -37,10 +37,7 @@ where
         Ok(Self(Arc::new(Inner::new(buffer, version)?)))
     }
 
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<u64, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         self.0.push(buf)
     }
 
@@ -134,10 +131,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<u64, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -551,7 +545,7 @@ mod tests {
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         for _ in 0..5 {
-            ring_buffer.push(binary_data(b"kittens")).expect("push");
+            ring_buffer.push(b"kittens").expect("push");
         }
 
         let pool = PoolImpl::new(1024, 1024);
@@ -563,7 +557,7 @@ mod tests {
         }
 
         // We don't write the read ptr on reads, so to test we do another write.
-        ring_buffer.push(binary_data(b"kittens")).expect("push");
+        ring_buffer.push(b"kittens").expect("push");
 
         let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::Acquire);
         let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::Acquire);
@@ -1071,7 +1065,7 @@ mod tests {
 
         // fill buffer
         let mut i = 0;
-        while let Ok(_) = ring_buffer.push(binary_data(format!("hello {i}").as_bytes())) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
             i += 1;
         }
 
@@ -1091,7 +1085,7 @@ mod tests {
         }
 
         // fill buffer again
-        while let Ok(_) = ring_buffer.push(binary_data(format!("hello {i}").as_bytes())) {
+        while let Ok(_) = ring_buffer.push(format!("hello {i}").as_bytes()) {
             i += 1;
         }
 

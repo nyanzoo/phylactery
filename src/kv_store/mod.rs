@@ -6,7 +6,6 @@ pub mod config;
 
 mod graveyard;
 pub use graveyard::Graveyard;
-use graveyard::Tombstone;
 
 mod metadata;
 

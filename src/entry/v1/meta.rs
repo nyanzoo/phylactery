@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use necronomicon::{BinaryData, Decode, DecodeOwned, Encode, Owned, Shared};
+use necronomicon::{Decode, Encode};
 
 use crate::Error;
 

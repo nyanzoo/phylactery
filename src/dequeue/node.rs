@@ -132,10 +132,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push<S>(&self, buf: BinaryData<S>) -> Result<Push, Error>
-    where
-        S: Shared,
-    {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -226,7 +223,7 @@ mod test {
         let buffer = InMemBuffer::new(128);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
-        node.push(binary_data(b"hello world")).unwrap();
+        node.push(b"hello world").unwrap();
 
         let buffer = node.buffer;
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
@@ -242,7 +239,7 @@ mod test {
         let buffer = InMemBuffer::new(128);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
-        node.push(binary_data(b"hello world")).unwrap();
+        node.push(b"hello world").unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
         let mut owned = pool.acquire().unwrap();
@@ -256,8 +253,8 @@ mod test {
         let buffer = InMemBuffer::new(64);
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
-        node.push(binary_data(b"hello world")).unwrap();
-        assert_matches!(node.push(binary_data(b"hello world")), Err(Error::NodeFull));
+        node.push(b"hello world").unwrap();
+        assert_matches!(node.push(b"hello world"), Err(Error::NodeFull));
     }
 
     #[test]
@@ -266,7 +263,7 @@ mod test {
         let node = DequeueNode::new(buffer, Version::V1).unwrap();
 
         assert_matches!(
-            node.push(binary_data(&[0u8; 129])),
+            node.push(&[0u8; 129]),
             Err(Error::EntryLargerThanNode(179, 128))
         );
     }
