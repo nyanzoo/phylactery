@@ -75,26 +75,23 @@ where
         O: Owned<Shared = S>,
     {
         let Config {
+            path,
             meta:
                 config::Metadata {
-                    meta_path,
-                    meta_size,
+                    max_disk_usage,
                     max_key_size,
                 },
-            data: config::Data {
-                data_path,
-                node_size,
-            },
+            data: config::Data { node_size },
             version,
         } = config;
-        let meta_path_saved = meta_path.clone();
-        let data_path_saved = data_path.clone();
+        let meta_path = format!("{}/meta.bin", path);
+        let data_path = format!("{}/data", path);
 
         let meta_block_size = metadata_block_size(max_key_size);
 
-        let meta = MmapBuffer::new(meta_path, meta_size)?;
+        let meta = MmapBuffer::new(meta_path.clone(), max_disk_usage)?;
         let mut meta = FixedSizeAllocator::new(meta, meta_block_size)?;
-        let dequeue = Dequeue::new(data_path, node_size, version)?;
+        let dequeue = Dequeue::new(data_path.clone(), node_size, version)?;
 
         let mut lookup = BTreeMap::new();
         for entry in meta.recovered_entries()? {
@@ -109,8 +106,8 @@ where
             dequeue,
             graveyard_pusher: pusher,
 
-            data_path: data_path_saved.to_owned(),
-            meta_path: meta_path_saved.to_owned(),
+            data_path: data_path.to_owned(),
+            meta_path: meta_path.to_owned(),
 
             max_key_size,
         })
@@ -465,23 +462,16 @@ mod test {
 
         let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
 
-        let meta_path = path.clone() + "meta.bin";
-
-        let data_path = path + "data.bin";
-
         let mut owned = pool.acquire().unwrap();
 
         let store = Store::new(
             Config {
+                path,
                 meta: config::Metadata {
-                    meta_path,
-                    meta_size: 1024,
+                    max_disk_usage: 1024,
                     max_key_size: 32,
                 },
-                data: config::Data {
-                    data_path,
-                    node_size: 1024,
-                },
+                data: config::Data { node_size: 1024 },
                 version: Version::V1,
             },
             pusher,
