@@ -56,11 +56,12 @@ where
     where
         Self: Sized,
     {
-        match u8::decode(reader)? {
+        let version = u8::decode(reader)?;
+        match version {
             1 => Ok(Self::V1),
             _ => Err(necronomicon::Error::Decode(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "invalid version",
+                format!("invalid version {version}"),
             ))),
         }
     }

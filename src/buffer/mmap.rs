@@ -19,6 +19,7 @@ impl MmapBuffer {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(path)?;
         file.set_len(size)?;
         let mmap = unsafe { MmapMut::map_mut(&file) }?;
@@ -69,8 +70,10 @@ impl Buffer for MmapBuffer {
                 capacity: exclusive.len(),
             });
         }
+
         let exclusive = &mut exclusive[off..(off + len)];
         data.encode(&mut Cursor::new(exclusive))?;
+
         Ok(())
     }
 

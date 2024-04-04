@@ -15,29 +15,20 @@ pub fn put_get_delete(c: &mut Criterion) {
     let mut group = c.benchmark_group("KV Store PutGetDelete");
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let path = temp_dir.into_path();
+    let path = format!("{}", temp_dir.into_path().display());
 
-    let mmap_path = path.join("mmap.bin");
-    let buffer = MmapBuffer::new(mmap_path, 1024 * 1024 * 10).expect("mmap buffer failed");
+    let mmap_path = format!("{}/graveyard.bin", path);
+    let buffer = MmapBuffer::new(mmap_path, 1024 * 1024 * 100).expect("mmap buffer failed");
 
     let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
 
-    let meta_path = path.join("meta.bin");
-    let meta_path = meta_path.to_str().unwrap();
-
-    let data_path = path.join("data");
-    let data_path = data_path.to_str().unwrap();
-
     let config = Config {
+        path: path.clone(),
         meta: config::Metadata {
-            meta_path: meta_path.to_string(),
-            meta_size: 1024,
+            max_disk_usage: 1024,
             max_key_size: 256,
         },
-        data: config::Data {
-            data_path: data_path.to_string(),
-            node_size: 4096,
-        },
+        data: config::Data { node_size: 4096 },
         version: Version::V1,
     };
 
@@ -48,7 +39,7 @@ pub fn put_get_delete(c: &mut Criterion) {
 
     let pclone = path.clone();
     let _ = std::thread::spawn(move || {
-        let graveyard = Graveyard::new(pclone.join("data"), popper);
+        let graveyard = Graveyard::new(format!("{}/data/", pclone).into(), popper);
         graveyard.bury(1);
     });
 
@@ -57,7 +48,9 @@ pub fn put_get_delete(c: &mut Criterion) {
             b.iter(|| {
                 let mut buf = pool.acquire().expect("acquire");
                 let key = binary_data(b"cat");
-                store.insert(key.clone(), b"yes", &mut buf).expect("insert failed");
+                store
+                    .insert(key.clone(), b"yes", &mut buf)
+                    .expect("insert failed");
 
                 let mut buf = pool.acquire().expect("acquire");
                 let value = store.get(&key, &mut buf).expect("get failed");
@@ -66,7 +59,6 @@ pub fn put_get_delete(c: &mut Criterion) {
                 };
 
                 assert_eq!(value.into_inner().data().as_slice(), b"yes");
-
                 let mut buf = pool.acquire().expect("acquire");
                 store.delete(&key, &mut buf).expect("delete failed");
             });

@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     config::{self, Config},
-    graveyard::{Tombstone, TOMBSTONE_LEN},
+    graveyard::Tombstone,
     metadata::{metadata_block_size, MetadataRead, MetadataWrite},
     MetaState,
 };
@@ -130,6 +130,7 @@ where
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .open(file.as_ref())
             .expect("failed to open file");
 
@@ -157,12 +158,11 @@ where
             meta.state = MetaState::Compacting;
 
             entry.update(&MetadataWrite::from(&meta))?;
-
             // needs to be tombstone!
 
-            let mut buf = vec![0; TOMBSTONE_LEN];
+            let mut buf = vec![];
             Tombstone::from(meta).encode(&mut buf)?;
-            self.graveyard_pusher.push(&buf)?;
+            let _ = self.graveyard_pusher.push(&buf)?;
         }
 
         Ok(())
@@ -286,7 +286,7 @@ where
             meta.state = MetaState::Compacting;
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone.
-            let mut buf = vec![0; TOMBSTONE_LEN];
+            let mut buf = vec![];
             Tombstone::from(meta).encode(&mut buf)?;
             self.graveyard_pusher.push(&buf)?;
         }
@@ -323,7 +323,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::io::Write;
+    use std::{io::Write, path::Path};
 
     use necronomicon::{binary_data, Pool, PoolImpl, SharedImpl};
     use tempfile::TempDir;
@@ -402,20 +402,19 @@ mod test {
     #[test]
     fn test_graveyard() {
         let temp_dir = tempfile::tempdir().unwrap();
-
+        let temp_path = temp_dir.path();
         let pool = PoolImpl::new(1024, 1024);
 
         let (mut store, popper) = test_kv_store(&temp_dir, &pool);
-        let path = temp_dir.into_path();
+        let path = format!("{}", temp_path.display());
 
         let pclone = path.clone();
         let _ = std::thread::spawn(move || {
-            let graveyard = Graveyard::new(pclone.join("data"), popper);
+            let graveyard = Graveyard::new(format!("{}/data", pclone).into(), popper);
             graveyard.bury(1);
         });
 
         let key = binary_data(b"pets");
-
         let mut owned = pool.acquire().unwrap();
         store
             .insert(key.clone(), b"cats", &mut owned)
@@ -445,10 +444,14 @@ mod test {
         };
 
         // For debugging:
-        // tree(&path);
+        // tree(&Path::new(&path));
+        // hexyl(format!("{}/meta.bin", path).as_ref());
 
-        assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
-        assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
+        let path = format!("{}/data", path);
+        let path0 = Path::new(&path).join("0.bin");
+        let path1 = Path::new(&path).join("1.bin");
+        assert!(!std::path::Path::exists(&path0));
+        assert!(!std::path::Path::exists(&path1));
     }
 
     fn test_kv_store(
@@ -457,7 +460,7 @@ mod test {
     ) -> (Store<SharedImpl>, Popper<MmapBuffer>) {
         let path = format!("{}", temp_dir.path().display());
 
-        let mmap_path = path.clone() + "mmap.bin";
+        let mmap_path = format!("{}/graveyard.bin", path);
         let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
 
         let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");

@@ -11,6 +11,7 @@ use crate::{buffer::Buffer, Error};
 // We need to be able to recover from a crash.
 // We can only do this if the Node contains info on
 // whether it is free or not.
+#[derive(Debug)]
 struct Node {
     next: usize,
     prev: usize,
@@ -139,7 +140,11 @@ where
     where
         T: Encode<Cursor<&'a mut [u8]>>,
     {
-        log::trace!("data_start: {}, data_end: {}", self.data_start, self.data_end);
+        log::trace!(
+            "data_start: {}, data_end: {}",
+            self.data_start,
+            self.data_end
+        );
         self.buffer
             .encode_at(self.data_start, self.data_end - self.data_start, t)?;
         Ok(())

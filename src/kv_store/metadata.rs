@@ -20,6 +20,7 @@ where
     pub state: MetaState,
 }
 
+#[derive(Debug)]
 pub(crate) struct MetadataWrite<'a> {
     pub crc: u32,
     pub file: u64,

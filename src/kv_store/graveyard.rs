@@ -9,6 +9,7 @@ use necronomicon::{Decode, Encode, Pool, PoolImpl, Shared};
 
 use crate::{
     buffer::{InMemBuffer, MmapBuffer},
+    entry::Metadata,
     ring_buffer,
 };
 
@@ -28,10 +29,18 @@ where
     W: Write,
 {
     fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        unsafe { std::ptr::addr_of!(self.crc).read_unaligned() }.encode(writer)?;
-        unsafe { std::ptr::addr_of!(self.file).read_unaligned() }.encode(writer)?;
-        unsafe { std::ptr::addr_of!(self.offset).read_unaligned() }.encode(writer)?;
-        unsafe { std::ptr::addr_of!(self.len).read_unaligned() }.encode(writer)?;
+        let crc: u32 = unsafe { std::ptr::addr_of!(self.crc).read_unaligned() };
+        crc.encode(writer)?;
+
+        let file: u64 = unsafe { std::ptr::addr_of!(self.file).read_unaligned() };
+        file.encode(writer)?;
+
+        let offset: u64 = unsafe { std::ptr::addr_of!(self.offset).read_unaligned() };
+        offset.encode(writer)?;
+
+        let len: u64 = unsafe { std::ptr::addr_of!(self.len).read_unaligned() };
+        len.encode(writer)?;
+
         Ok(())
     }
 }
@@ -82,7 +91,12 @@ impl Graveyard {
         Self {
             dir,
             popper,
-            pool: PoolImpl::new(TOMBSTONE_LEN, 1024 * 1024),
+            pool: PoolImpl::new(
+                usize::try_from(Metadata::struct_size(crate::entry::Version::V1))
+                    .expect("u32 -> usize")
+                    + TOMBSTONE_LEN,
+                1024 * 1024,
+            ),
         }
     }
 
@@ -142,8 +156,8 @@ impl Graveyard {
             // If we crash and it happens to be that tombstones map to same spot as different data,
             // then we will delete data we should keep. Is this true still?
             if let Ok(data) = self.popper.pop(&mut buf) {
+                data.verify().expect("failed to verify data");
                 let data = data.into_inner();
-                assert!(data.len() == TOMBSTONE_LEN, "invalid tombstone length");
                 let tomb = Tombstone::decode(&mut Cursor::new(data.data().as_slice()))
                     .expect("failed to decode tombstone");
 
