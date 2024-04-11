@@ -15,6 +15,8 @@ impl MmapBuffer {
     where
         P: AsRef<Path>,
     {
+        // Don't truncate to allow for recovery.
+        #[allow(clippy::suspicious_open_options)]
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
