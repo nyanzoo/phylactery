@@ -21,7 +21,6 @@ impl MmapBuffer {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
             .open(path)?;
         file.set_len(size)?;
         let mmap = unsafe { MmapMut::map_mut(&file) }?;
