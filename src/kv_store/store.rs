@@ -26,13 +26,28 @@ where
     Found(Readable<S>),
 }
 
-pub struct DeconstructIter(Vec<String>);
+pub struct DeconstructIter {
+    files: Vec<String>,
+    curr_file_offset: u64,
+    chunk_size: u64,
+    file_size: u64,
+}
 
 impl Iterator for DeconstructIter {
-    type Item = String;
+    type Item = (String, u64);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.pop()
+        if self.curr_file_offset == self.file_size {
+            self.files.pop();
+        }
+        if let Some(file) = self.files.pop() {
+            let offset = self.curr_file_offset;
+            self.curr_file_offset += self.chunk_size;
+            self.curr_file_offset = std::cmp::min(self.curr_file_offset, self.file_size);
+            Some((file, offset))
+        } else {
+            None
+        }
     }
 }
 
@@ -59,6 +74,8 @@ where
 
     // max key size allowed
     max_key_size: usize,
+    // max file size
+    max_file_size: u64,
 }
 
 // The expectation is that this is single threaded.
@@ -110,10 +127,11 @@ where
             meta_path: meta_path.to_owned(),
 
             max_key_size,
+            max_file_size: node_size,
         })
     }
 
-    pub fn deconstruct_iter(&self) -> DeconstructIter {
+    pub fn deconstruct_iter(&self, chunk_size: u64) -> DeconstructIter {
         // Get all the files in the data directory
         let mut files = std::fs::read_dir(&self.data_path)
             .expect("failed to read data directory")
@@ -123,7 +141,12 @@ where
 
         files.push(self.meta_path.clone());
 
-        DeconstructIter(files)
+        DeconstructIter{
+            files,
+            curr_file_offset: 0,
+            chunk_size,
+            file_size: self.max_file_size,
+        }
     }
 
     pub fn reconstruct(&self, file: impl AsRef<str>, contents: &[u8]) {
