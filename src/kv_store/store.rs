@@ -40,11 +40,11 @@ impl Iterator for DeconstructIter {
         if self.curr_file_offset == self.file_size {
             self.files.pop();
         }
-        if let Some(file) = self.files.pop() {
+        if let Some(file) = self.files.last() {
             let offset = self.curr_file_offset;
             self.curr_file_offset += self.chunk_size;
             self.curr_file_offset = std::cmp::min(self.curr_file_offset, self.file_size);
-            Some((file, offset))
+            Some((file.clone(), offset))
         } else {
             None
         }
@@ -141,7 +141,7 @@ where
 
         files.push(self.meta_path.clone());
 
-        DeconstructIter{
+        DeconstructIter {
             files,
             curr_file_offset: 0,
             chunk_size,
