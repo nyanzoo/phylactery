@@ -26,6 +26,14 @@ impl From<Version> for u8 {
     }
 }
 
+impl TryFrom<necronomicon::Version> for Version {
+    type Error = Error;
+
+    fn try_from(value: necronomicon::Version) -> Result<Self, Self::Error> {
+        Self::try_from(u8::from(value))
+    }
+}
+
 impl TryFrom<u8> for Version {
     type Error = Error;
 
