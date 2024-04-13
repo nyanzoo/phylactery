@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io::Write};
 
-use necronomicon::{BinaryData, Encode, Owned, Shared};
+use necronomicon::{BinaryData, Encode, OwnedImpl, Pool, PoolImpl, Shared, SharedImpl};
 
 use crate::{
     alloc::{Entry, FixedSizeAllocator},
@@ -55,12 +55,9 @@ impl Iterator for DeconstructIter {
 // 1. The key metadata layer that holds [crc, file, offset, key] for each key
 //    where the hash of the key is the index into the key metadata layer.
 // 2. The data layer is where we store [crc, key length, key, value length, value]
-pub struct Store<S>
-where
-    S: Shared,
-{
+pub struct Store {
     // store key metadata
-    lookup: BTreeMap<BinaryData<S>, Entry<MmapBuffer>>,
+    lookup: BTreeMap<BinaryData<SharedImpl>, Entry<MmapBuffer>>,
     // meta file
     meta: FixedSizeAllocator<MmapBuffer>,
     // data files
@@ -76,21 +73,13 @@ where
     max_key_size: usize,
     // max file size
     max_file_size: u64,
+
+    meta_pool: PoolImpl,
 }
 
 // The expectation is that this is single threaded.
-impl<S> Store<S>
-where
-    S: Shared,
-{
-    pub fn new<O>(
-        config: Config,
-        pusher: ring_buffer::Pusher<MmapBuffer>,
-        buffer: &mut O,
-    ) -> Result<Self, Error>
-    where
-        O: Owned<Shared = S>,
-    {
+impl Store {
+    pub fn new(config: Config, pusher: ring_buffer::Pusher<MmapBuffer>) -> Result<Self, Error> {
         let Config {
             path,
             meta:
@@ -110,9 +99,12 @@ where
         let mut meta = FixedSizeAllocator::new(meta, meta_block_size)?;
         let dequeue = Dequeue::new(data_path.clone(), node_size, version)?;
 
+        let meta_pool = PoolImpl::new(meta_block_size, max_disk_usage as usize / meta_block_size);
+
         let mut lookup = BTreeMap::new();
         for entry in meta.recovered_entries()? {
-            let MetadataRead { key, .. } = entry.data_owned(buffer)?;
+            let mut buffer = meta_pool.acquire().expect("failed to acquire buffer");
+            let MetadataRead { key, .. } = entry.data_owned(&mut buffer)?;
 
             lookup.insert(key, entry);
         }
@@ -128,6 +120,7 @@ where
 
             max_key_size,
             max_file_size: node_size,
+            meta_pool,
         })
     }
 
@@ -160,14 +153,12 @@ where
         file.write_all(contents).expect("failed to write file");
     }
 
-    pub fn delete<O>(&mut self, key: &BinaryData<S>, buffer: &mut O) -> Result<(), Error>
-    where
-        O: Owned<Shared = S>,
-    {
+    pub fn delete(&mut self, key: &BinaryData<SharedImpl>) -> Result<(), Error> {
         if let Some(mut entry) = self.lookup.remove(key) {
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone.
-            let mut meta: MetadataRead<S> = entry.data_owned(buffer)?;
+            let mut buffer = self.meta_pool.acquire().expect("failed to acquire buffer");
+            let mut meta: MetadataRead<_> = entry.data_owned(&mut buffer)?;
 
             match meta.state {
                 MetaState::Full => {}
@@ -225,12 +216,14 @@ where
     ///
     /// # Errors
     /// See [`Error`].
-    pub fn get<O>(&mut self, key: &BinaryData<S>, buf: &mut O) -> Result<Lookup<S>, Error>
-    where
-        O: Owned<Shared = S>,
-    {
+    pub fn get(
+        &mut self,
+        key: &BinaryData<SharedImpl>,
+        buf: &mut OwnedImpl,
+    ) -> Result<Lookup<SharedImpl>, Error> {
         if let Some(entry) = self.lookup.get(key) {
-            let meta: MetadataRead<<O as Owned>::Shared> = entry.data_owned(buf)?;
+            let mut buffer = self.meta_pool.acquire().expect("failed to acquire buffer");
+            let meta: MetadataRead<_> = entry.data_owned(&mut buffer)?;
 
             let MetadataRead {
                 crc: _, // TODO: verify crc
@@ -286,15 +279,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn insert<O>(
-        &mut self,
-        key: BinaryData<S>,
-        value: &[u8],
-        buffer: &mut O,
-    ) -> Result<(), Error>
-    where
-        O: Owned<Shared = S>,
-    {
+    pub fn insert(&mut self, key: BinaryData<SharedImpl>, value: &[u8]) -> Result<(), Error> {
         if key.len() > self.max_key_size {
             return Err(Error::KeyTooLong {
                 key: key.data().as_slice().to_vec(),
@@ -304,7 +289,8 @@ where
 
         // We need to tombstone old entry if it exists.
         if let Some(entry) = self.lookup.remove(&key) {
-            let mut meta: MetadataRead<S> = entry.data_owned(buffer)?;
+            let mut buffer = self.meta_pool.acquire().expect("failed to acquire buffer");
+            let mut meta: MetadataRead<_> = entry.data_owned(&mut buffer)?;
 
             meta.state = MetaState::Compacting;
             // Need to use the push-side of the ring buffer for graveyard.
@@ -348,7 +334,7 @@ where
 mod test {
     use std::{io::Write, path::Path};
 
-    use necronomicon::{binary_data, Pool, PoolImpl, SharedImpl};
+    use necronomicon::{binary_data, Pool, PoolImpl};
     use tempfile::TempDir;
 
     use crate::{
@@ -370,15 +356,11 @@ mod test {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let (mut store, _) = test_kv_store(&temp_dir, &pool);
+        let (mut store, _) = test_kv_store(&temp_dir);
 
         let key = binary_data(b"pets");
 
-        let mut owned = pool.acquire().unwrap();
-
-        store
-            .insert(key.clone(), b"cats", &mut owned)
-            .expect("insert failed");
+        store.insert(key.clone(), b"cats").expect("insert failed");
 
         let mut owned = pool.acquire().unwrap();
         let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
@@ -395,15 +377,11 @@ mod test {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let (mut store, _) = test_kv_store(&temp_dir, &pool);
+        let (mut store, _) = test_kv_store(&temp_dir);
 
         let key = binary_data(b"pets");
 
-        let mut owned = pool.acquire().unwrap();
-
-        store
-            .insert(key.clone(), b"cats", &mut owned)
-            .expect("insert failed");
+        store.insert(key.clone(), b"cats").expect("insert failed");
 
         let mut owned = pool.acquire().unwrap();
         let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
@@ -413,8 +391,7 @@ mod test {
         let actual = data.into_inner();
         assert_eq!(actual, binary_data(b"cats"));
 
-        let mut owned = pool.acquire().unwrap();
-        store.delete(&key, &mut owned).expect("delete failed");
+        store.delete(&key).expect("delete failed");
 
         let mut owned = pool.acquire().unwrap();
         let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
@@ -428,7 +405,7 @@ mod test {
         let temp_path = temp_dir.path();
         let pool = PoolImpl::new(1024, 1024);
 
-        let (mut store, popper) = test_kv_store(&temp_dir, &pool);
+        let (mut store, popper) = test_kv_store(&temp_dir);
         let path = format!("{}", temp_path.display());
 
         let pclone = path.clone();
@@ -438,15 +415,8 @@ mod test {
         });
 
         let key = binary_data(b"pets");
-        let mut owned = pool.acquire().unwrap();
-        store
-            .insert(key.clone(), b"cats", &mut owned)
-            .expect("insert failed");
-
-        let mut owned = pool.acquire().unwrap();
-        store
-            .insert(key.clone(), b"dogs", &mut owned)
-            .expect("insert failed");
+        store.insert(key.clone(), b"cats").expect("insert failed");
+        store.insert(key.clone(), b"dogs").expect("insert failed");
 
         let mut owned = pool.acquire().unwrap();
         let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
@@ -456,8 +426,7 @@ mod test {
         let actual = data.into_inner();
         assert_eq!(actual, binary_data(b"dogs"));
 
-        let mut owned = pool.acquire().unwrap();
-        store.delete(&key, &mut owned).expect("delete failed");
+        store.delete(&key).expect("delete failed");
         // Wait long enough for graveyard to run
         std::thread::sleep(std::time::Duration::from_secs(5));
         // assert that the data folder is empty
@@ -477,18 +446,13 @@ mod test {
         assert!(!std::path::Path::exists(&path1));
     }
 
-    fn test_kv_store(
-        temp_dir: &TempDir,
-        pool: &PoolImpl,
-    ) -> (Store<SharedImpl>, Popper<MmapBuffer>) {
+    fn test_kv_store(temp_dir: &TempDir) -> (Store, Popper<MmapBuffer>) {
         let path = format!("{}", temp_dir.path().display());
 
         let mmap_path = format!("{}/graveyard.bin", path);
         let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
 
         let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
-
-        let mut owned = pool.acquire().unwrap();
 
         let store = Store::new(
             Config {
@@ -501,7 +465,6 @@ mod test {
                 version: Version::V1,
             },
             pusher,
-            &mut owned,
         )
         .expect("Store::new failed");
 
