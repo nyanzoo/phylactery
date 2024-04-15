@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use log::trace;
 use necronomicon::{Decode, Encode, Pool, PoolImpl, Shared};
 
 use crate::{
@@ -88,15 +89,15 @@ pub struct Graveyard {
 
 impl Graveyard {
     pub fn new(dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
+        let block_size = usize::try_from(Metadata::struct_size(crate::entry::Version::V1))
+            .expect("u32 -> usize")
+            + TOMBSTONE_LEN;
+
+        trace!("block_size: {}", block_size);
         Self {
             dir,
             popper,
-            pool: PoolImpl::new(
-                usize::try_from(Metadata::struct_size(crate::entry::Version::V1))
-                    .expect("u32 -> usize")
-                    + TOMBSTONE_LEN,
-                1024 * 1024,
-            ),
+            pool: PoolImpl::new(block_size, 1024 * 1024),
         }
     }
 
@@ -118,6 +119,7 @@ impl Graveyard {
                 // If file doesn't exist, then we have already compacted it, or removed it.
                 if let Ok(mut file) = std::fs::File::open(path.clone()) {
                     let len = file.metadata().expect("no file metadata").len();
+                    trace!("compacting file: {} len: {}", path.display(), len);
                     let mut in_buf = InMemBuffer::new(len);
 
                     file.read_exact(in_buf.as_mut())
