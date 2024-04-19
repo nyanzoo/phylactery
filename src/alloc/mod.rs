@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use log::trace;
 use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
 use crate::{buffer::Buffer, Error};
@@ -140,7 +141,7 @@ where
     where
         T: Encode<Cursor<&'a mut [u8]>>,
     {
-        log::trace!(
+        trace!(
             "data_start: {}, data_end: {}",
             self.data_start,
             self.data_end
@@ -269,7 +270,9 @@ where
             next: next_free,
             count,
         } = self.sentinel()?;
-        if next_free == u64::MAX || (next_free + NODE_SIZE as u64) >= self.capacity() {
+        if next_free == u64::MAX
+            || (next_free + NODE_SIZE as u64 + self.data_size as u64) >= self.capacity()
+        {
             return Err(Error::OutOfMemory {
                 total: self.capacity(),
                 used: next_free,
@@ -336,40 +339,69 @@ where
 #[cfg(test)]
 mod tests {
 
-    use std::rc::Rc;
+    use std::{mem::size_of, rc::Rc};
 
-    use crate::buffer::InMemBuffer;
+    use matches::assert_matches;
+
+    use crate::{buffer::InMemBuffer, Error};
 
     use super::{FixedSizeAllocator, NODE_SIZE, SENTINEL_SIZE};
 
-    #[test]
-    fn alloc_free() {
-        let data_size = 8;
-
+    #[test_case::test_case(1)]
+    #[test_case::test_case(8)]
+    #[test_case::test_case(16)]
+    #[test_case::test_case(32)]
+    #[test_case::test_case(64)]
+    #[test_case::test_case(128)]
+    #[test_case::test_case(1024)]
+    #[test_case::test_case(9)]
+    #[test_case::test_case(57)]
+    #[test_case::test_case(65)]
+    fn alloc_free(data_size: usize) {
         let alloc =
-            FixedSizeAllocator::<InMemBuffer>::new(InMemBuffer::new(1024), data_size).unwrap();
+            FixedSizeAllocator::<InMemBuffer>::new(InMemBuffer::new(4096), data_size).unwrap();
 
         let mut entries = vec![];
 
-        let max_entries = (1024 - SENTINEL_SIZE) / (NODE_SIZE + data_size);
-        for _ in 0..max_entries {
-            let entry = alloc.alloc().unwrap();
-            entries.push(entry);
+        loop {
+            match alloc.alloc() {
+                Ok(entry) => entries.push(entry),
+                Err(Error::OutOfMemory { .. }) => break,
+                Err(err) => panic!("unexpected error: {:?}", err),
+            }
         }
 
-        assert!(alloc.alloc().is_err());
-
-        entries.remove(max_entries / 2); // should be some middle entry
-
-        entries.push(alloc.alloc().unwrap());
-
-        for free in entries.into_iter() {
-            drop(free);
+        for entry in &mut entries {
+            if data_size < size_of::<usize>() {
+                assert_matches!(entry.update(&7u8), Ok(_));
+            } else {
+                // need space for the len
+                assert_matches!(
+                    entry.update(&vec![7u8; data_size - size_of::<usize>()]),
+                    Ok(_)
+                );
+            }
         }
 
-        for _ in 0..max_entries {
-            alloc.alloc().unwrap();
+        // drop half the entries
+        let mut entries = entries
+            .into_iter()
+            .enumerate()
+            .skip_while(|(i, _)| i % 2 == 0)
+            .map(|(_, entry)| entry)
+            .collect::<Vec<_>>();
+
+        let count = entries.len();
+
+        loop {
+            match alloc.alloc() {
+                Ok(entry) => entries.push(entry),
+                Err(Error::OutOfMemory { .. }) => break,
+                Err(err) => panic!("unexpected error: {:?}", err),
+            }
         }
+
+        assert_ne!(entries.len(), count);
     }
 
     #[test]
