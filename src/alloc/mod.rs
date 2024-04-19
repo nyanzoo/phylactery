@@ -445,6 +445,8 @@ mod tests {
         for free in recovered.into_iter() {
             assert_eq!(free.data::<u64>().unwrap(), 42);
         }
+
+        assert_ne!(entries.len(), count);
     }
 
     #[test]
