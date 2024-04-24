@@ -18,6 +18,8 @@ pub(crate) enum MetaState {
     Compacting,
     // Has live data associated with it
     Full,
+    // Ready to accept data
+    Ready,
 }
 
 impl<W> Encode<W> for MetaState

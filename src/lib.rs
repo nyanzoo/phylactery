@@ -7,10 +7,6 @@ pub mod buffer;
 pub mod dequeue;
 
 pub mod entry;
-
-mod error;
-pub use error::Error;
-
+pub mod error;
 pub mod kv_store;
-
 pub mod ring_buffer;
