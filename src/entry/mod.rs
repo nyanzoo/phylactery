@@ -230,6 +230,13 @@ impl<'a> Data<'a> {
 
     pub fn crc(&self) -> u32 {
         match self {
+            Self::Version1(data) => data.crc,
+        }
+    }
+}
+
+    pub fn crc(&self) -> u32 {
+        match self {
             Self::Version1(data) => data.crc(),
         }
     }

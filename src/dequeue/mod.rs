@@ -10,10 +10,9 @@ use std::{
     },
 };
 
-use necronomicon::Decode;
-
 use crate::{
     buffer::InMemBuffer,
+    codec::Decode,
     entry::{Data, Metadata, Version},
 };
 
@@ -121,8 +120,7 @@ pub enum Pop {
 pub struct Push {
     pub file: u64,
     pub offset: u64,
-    pub len: u64,
-    pub crc: u32,
+    pub length: u64,
 }
 
 struct Inner<S>
@@ -228,7 +226,7 @@ where
         }
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
@@ -236,12 +234,7 @@ where
 
         let write = unsafe { write.as_ref() };
         match write.push(buf) {
-            Ok(node::Push { offset, len, crc }) => Ok(Push {
-                file: self.backing_generator.write_idx(),
-                offset,
-                len,
-                crc,
-            }),
+            Ok(data) => Ok(data),
             Err(Error::NodeFull) => {
                 let File {
                     file: mut next,
@@ -252,7 +245,7 @@ where
 
                 let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
 
-                let node::Push { offset, len, crc } = node.push(buf)?;
+                let data = node.push(buf)?;
 
                 let node = Box::into_raw(Box::new(node));
 
@@ -263,12 +256,7 @@ where
                     unsafe { drop(Box::from_raw(write_ptr)) };
                 }
 
-                Ok(Push {
-                    file: index,
-                    offset,
-                    len,
-                    crc,
-                })
+                Ok(data)
             }
             Err(e) => Err(e),
         }
@@ -296,14 +284,14 @@ where
         Ok(())
     }
 
-    pub(crate) fn get(
+    pub(crate) fn get<'a>(
         &self,
         file: u64,
         offset: u64,
-        buf: &mut Vec<u8>,
+        buf: &'a mut [u8],
         version: Version,
-    ) -> Result<Data, Error> {
-        let mut meta_buf = vec![0; Metadata::struct_size(version) as usize];
+    ) -> Result<Data<'a>, Error> {
+        let mut meta_buf = vec![0; Metadata::size(version) as usize];
 
         let file = OpenOptions::new().read(true).open(format!(
             "{}/{}.bin",
@@ -312,12 +300,11 @@ where
         ))?;
         file.read_at(&mut meta_buf, offset)?;
 
-        let meta = Metadata::decode(&mut Cursor::new(&mut meta_buf))?;
+        let meta = Metadata::decode(&meta_buf)?;
         meta.verify()?;
 
-        buf.resize(meta.data_size() as usize, 0);
-        file.read_at(buf, offset + Metadata::struct_size(version) as u64)?;
-        let data = Data::decode(&mut Cursor::new(buf))?;
+        file.read_at(buf, offset + Metadata::size(version) as u64)?;
+        let data = Data::decode(buf)?;
 
         Ok(data)
     }
@@ -360,7 +347,7 @@ where
         Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
         self.0.push(buf)
     }
 
@@ -372,7 +359,12 @@ where
         self.0.pop(buf)
     }
 
-    pub(crate) fn get(&self, file: u64, offset: u64, buf: &mut Vec<u8>) -> Result<Data, Error> {
+    pub(crate) fn get<'a>(
+        &self,
+        file: u64,
+        offset: u64,
+        buf: &'a mut [u8],
+    ) -> Result<Data<'a>, Error> {
         self.0.get(file, offset, buf, self.0.version)
     }
 }
@@ -389,7 +381,7 @@ where
         Self(dequeue)
     }
 
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
         self.0.push(buf)
     }
 

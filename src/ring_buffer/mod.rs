@@ -13,7 +13,6 @@ use crate::{
 
 pub mod error;
 pub use error::Error;
-use necronomicon::Encode;
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
 where
@@ -46,8 +45,12 @@ where
         self.0.pop(buf)
     }
 
-    pub fn peek(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.0.peek(buf)
+    pub(crate) fn get(&self, off: u64, buf: &mut [u8]) -> Result<(), Error> {
+        self.0.get(off, buf)
+    }
+
+    pub(crate) fn update(&self, off: u64, update_fn: impl FnOnce(&mut [u8])) -> Result<(), Error> {
+        self.0.update(off, update_fn)
     }
 
     #[cfg(test)]
@@ -377,6 +380,103 @@ where
         }
         Ok(metadata.real_data_size() as usize)
     }
+
+    pub(crate) fn get(&self, off: u64, buf: &mut [u8]) -> Result<(), Error> {
+        let metadata = self
+            .buffer
+            .decode_at::<Metadata>(off as usize, Metadata::size(self.version) as usize)?;
+
+        // If the metadata CRC does not match, we can't read.
+        metadata.verify()?;
+
+        // If the data buffer is too small to hold the data, we can't read.
+        if buf.len() < metadata.real_data_size() as usize {
+            return Err(Error::BufferTooSmall(
+                buf.len() as u32,
+                metadata.real_data_size(),
+            ));
+        }
+
+        let off = off + Metadata::size(self.version) as u64;
+        let data: Data<'_> = self
+            .buffer
+            .decode_at(off as usize, metadata.data_size() as usize)?;
+        data.verify()?;
+        data.copy_into(buf);
+
+        Ok(())
+    }
+
+    // NOTE: this is only for KV store and the new data must be same size as original content!
+    pub(crate) fn update(&self, off: u64, update_fn: impl FnOnce(&mut [u8])) -> Result<(), Error> {
+        let metadata = self
+            .buffer
+            .decode_at::<Metadata>(off as usize, Metadata::size(self.version) as usize)?;
+
+        // If the metadata CRC does not match, we can't read.
+        metadata.verify()?;
+
+        let off = off + Metadata::size(self.version) as u64;
+        let mut data: Data<'_> = self
+            .buffer
+            .decode_at(off as usize, metadata.data_size() as usize)?;
+        data.verify()?;
+
+        match &mut data {
+            Data::Version1(data) => update_fn(&mut data.data),
+        }
+
+        self.buffer
+            .encode_at(off as usize, metadata.data_size() as usize, &data)?;
+
+        Ok(())
+    }
+}
+
+pub struct Pusher<B>(RingBuffer<B>)
+where
+    B: Buffer;
+
+impl<B> Pusher<B>
+where
+    B: Buffer,
+{
+    pub fn new(buffer: RingBuffer<B>) -> Self {
+        Self(buffer)
+    }
+
+    pub fn push(&self, buf: &[u8]) -> Result<u64, Error> {
+        self.0.push(buf)
+    }
+}
+
+pub struct Popper<B>(RingBuffer<B>)
+where
+    B: Buffer;
+
+impl<B> Popper<B>
+where
+    B: Buffer,
+{
+    pub fn new(dequeue: RingBuffer<B>) -> Self {
+        Self(dequeue)
+    }
+
+    pub fn pop(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.0.pop(buf)
+    }
+}
+
+pub fn ring_buffer<B>(buffer: B, version: Version) -> Result<(Pusher<B>, Popper<B>), Error>
+where
+    B: Buffer,
+{
+    let buffer = RingBuffer::new(buffer, version)?;
+
+    let pusher = Pusher::new(buffer.clone());
+    let popper = Popper::new(buffer);
+
+    Ok((pusher, popper))
 }
 
 pub struct Iter<'a, B> {

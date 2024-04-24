@@ -130,7 +130,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -187,11 +187,7 @@ where
         self.entry.store(entry, Ordering::Release);
         self.has_data.store(true, Ordering::Release);
 
-        Ok(Push {
-            offset,
-            len,
-            crc: data.crc(),
-        })
+        Ok(data)
     }
 }
 
