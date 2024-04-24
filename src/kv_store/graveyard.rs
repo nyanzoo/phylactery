@@ -101,9 +101,6 @@ impl Graveyard {
         }
     }
 
-    // The problem is we also need to update the metadata for the dequeue.
-    // We can't just delete the data, we need to update the metadata to say
-    // that the data is no longer there and somewhere else (if just moved).;p[''']
     pub fn bury(self, interval: u64) -> ! {
         let interval = Duration::from_secs(interval);
         loop {
@@ -122,8 +119,7 @@ impl Graveyard {
                     trace!("compacting file: {} len: {}", path.display(), len);
                     let mut in_buf = InMemBuffer::new(len);
 
-                    file.read_exact(in_buf.as_mut())
-                        .expect("failed to read file");
+                    file.read_exact(in_buf.as_mut()).expect("failed to read file");
 
                     let out_buf = Self::compact_buf(tomb, in_buf);
 

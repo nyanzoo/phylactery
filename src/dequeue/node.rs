@@ -41,7 +41,6 @@ where
 #[derive(Debug)]
 pub struct Push {
     pub offset: u64,
-    pub len: u64,
     pub crc: u32,
 }
 
@@ -132,7 +131,7 @@ where
     ///
     /// # Errors
     /// See [`Error`] for more details.
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         if buf.is_empty() {
             return Err(Error::EmptyData);
         }
@@ -190,7 +189,10 @@ where
         self.entry.store(entry, Ordering::Release);
         self.has_data.store(true, Ordering::Release);
 
-        Ok(data)
+        Ok(Push {
+            offset,
+            crc: data.crc(),
+        })
     }
 }
 
