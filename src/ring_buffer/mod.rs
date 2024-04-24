@@ -403,6 +403,53 @@ where
     }
 }
 
+pub struct Iter<'a, B> {
+    buffer: &'a B,
+    start: u64,
+    end: u64,
+    has_data: bool,
+    version: Version,
+}
+
+impl<'a, B> Iterator for Iter<'a, B>
+where
+    B: Buffer,
+{
+    type Item = u64;
+
+    // Very similar to `pop` except we don't update the read pointer and crash if cannot proceed.
+    fn next(&mut self) -> Option<Self::Item> {
+        // If the buffer is empty, we can't read.
+        if !self.has_data {
+            return None;
+        }
+
+        let next = self.start;
+
+        // wrap around means we have read everything
+        if self.start + Metadata::size(self.version) as u64 > self.buffer.capacity() {
+            self.start = 0;
+        }
+
+        let metadata = self
+            .buffer
+            .decode_at::<Metadata>(self.start as usize, Metadata::size(self.version) as usize)
+            .expect("failed to decode metadata");
+
+        // If the metadata CRC does not match, we can't read.
+        metadata.verify().expect("corrupted metadata");
+
+        self.start += Metadata::size(self.version) as u64;
+
+        // handle wrap around case
+        self.start += metadata.data_size() as u64;
+        self.start %= self.buffer.capacity();
+        self.has_data = self.start != self.end;
+
+        Some(next)
+    }
+}
+
 pub struct Pusher<B>(RingBuffer<B>)
 where
     B: Buffer;

@@ -18,8 +18,6 @@ pub(crate) enum MetaState {
     Compacting,
     // Has live data associated with it
     Full,
-    // Ready to accept data
-    Ready,
 }
 
 impl<W> Encode<W> for MetaState
@@ -50,5 +48,48 @@ where
                 "invalid meta state",
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        buffer::MmapBuffer,
+        codec::Decode,
+        entry::{Data, Version},
+        ring_buffer::ring_buffer,
+    };
+
+    use super::KVStore;
+
+    #[test]
+    fn test_put_get() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.into_path();
+
+        let mmap_path = path.join("mmap.bin");
+        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+
+        let (pusher, _popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+
+        let meta_path = path.join("meta.bin");
+        let meta_path = meta_path.to_str().unwrap();
+
+        let data_path = path.join("data.bin");
+        let data_path = data_path.to_str().unwrap();
+
+        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
+            .expect("KVStore::new failed");
+
+        store
+            .insert(b"pets", "cats".as_bytes())
+            .expect("insert failed");
+        let mut buf = vec![0; 64];
+        store.get(b"pets", &mut buf).expect("key not found");
+
+        let actual = Data::decode(&buf)
+            .expect("failed to deserialize")
+            .into_inner();
+        assert_eq!(actual, b"cats");
     }
 }
