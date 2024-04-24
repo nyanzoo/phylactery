@@ -26,12 +26,12 @@ struct KeyLookup {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 pub enum MetaState {
+    // Ready to accept data (never actively set)
+    Ready,
     // We need to compact and cannot accept new metadata in this slot
     Compacting,
     // Has live data associated with it
     Full,
-    // Ready to accept data
-    Ready,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -51,13 +51,13 @@ impl Decode<'_> for Metadata {
     where
         Self: Sized,
     {
-        bincode::deserialize(buf).map_err(|err| codec::Error::from(err))
+        bincode::deserialize(buf).map_err(codec::Error::from)
     }
 }
 
 impl Encode for Metadata {
     fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
-        bincode::serialize_into(buf, self).map_err(|err| codec::Error::from(err))
+        bincode::serialize_into(buf, self).map_err(codec::Error::from)
     }
 }
 
@@ -65,7 +65,7 @@ impl Encode for Metadata {
 // 1. The key metadata layer that holds [crc, file, offset, key] for each key
 //    where the hash of the key is the index into the key metadata layer.
 // 2. The data layer is where we store [crc, key length, key, value length, value]
-pub struct KvStore<S>
+pub struct KVStore<S>
 where
     S: AsRef<str>,
 {
@@ -79,7 +79,8 @@ where
     pusher: ring_buffer::Pusher<MmapBuffer>,
 }
 
-impl<S> KvStore<S>
+// The expectation is that this is single threaded.
+impl<S> KVStore<S>
 where
     S: AsRef<str> + AsRef<Path>,
 {
@@ -95,14 +96,38 @@ where
         let meta = RingBuffer::new(meta, version)?;
         let dequeue = Dequeue::new(data_path, node_size, version)?;
 
-        // TODO: populate in-mem map.
+        let mut lookup = BTreeMap::new();
+        for pos in meta.iter() {
+            let mut buf = vec![0; METADATA_SIZE];
+            meta.get(pos, &mut buf)?;
+            let Metadata { offset, key, .. } = Metadata::decode(&buf)?;
 
-        Ok(KvStore {
-            lookup: BTreeMap::new(),
+            lookup.insert(key, KeyLookup { offset });
+        }
+
+        Ok(Self {
+            lookup,
             meta,
             dequeue,
             pusher,
         })
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> Result<(), Error> {
+        if let Some(lookup) = self.lookup.remove(key) {
+            let mut buf = vec![0; METADATA_SIZE];
+            // Need to use the push-side of the ring buffer for graveyard.
+            // We also need to make sure we set the flag for tombstone,
+            // which means the ringbuffer will need to have an update method.
+            self.meta.get(lookup.offset, &mut buf)?;
+            self.meta.update(lookup.offset, |data: &mut [u8]| {
+                let mut metadata = Metadata::decode(data).expect("metadata decode failed");
+                metadata.state = MetaState::Compacting;
+                metadata.encode(data).expect("metadata encode failed");
+            })?;
+        }
+
+        Ok(())
     }
 
     // Need to think through how to handle the possible state of insert to backing queue
@@ -113,7 +138,7 @@ where
         'b: 'a,
     {
         if let Some(lookup) = self.lookup.get(key) {
-            self.meta.get(lookup.offset as u64, buf)?;
+            self.meta.get(lookup.offset, buf)?;
 
             let Metadata {
                 crc: _, // TODO: verify crc
@@ -143,12 +168,13 @@ where
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         // We need to tombstone old entry if it exists.
         if let Some(lookup) = self.lookup.get(key) {
+            let offset = lookup.offset;
             let mut buf = vec![0; METADATA_SIZE];
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone,
             // which means the ringbuffer will need to have an update method.
-            self.meta.get(lookup.offset as u64, &mut buf)?;
-            self.meta.update(lookup.offset as u64, |data: &mut [u8]| {
+            self.meta.get(offset, &mut buf)?;
+            self.meta.update(offset, |data: &mut [u8]| {
                 let mut metadata = Metadata::decode(data).expect("metadata decode failed");
                 metadata.state = MetaState::Compacting;
                 metadata.encode(data).expect("metadata encode failed");
@@ -158,13 +184,14 @@ where
 
         // Dequeue needs to also return the offset and file of the data.
         let Push { file, offset, crc } = self.dequeue.push(value)?;
+        self.dequeue.flush()?;
 
         // Need to store key here too...
         let metadata = Metadata {
             crc,
             file,
             offset,
-            state: MetaState::Ready,
+            state: MetaState::Full,
             key: key.to_vec(),
         };
         let metadata = bincode::serialize(&metadata).expect("failed to serialize metadata");
@@ -175,5 +202,48 @@ where
         self.lookup.insert(key.to_vec(), KeyLookup { offset });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        buffer::MmapBuffer,
+        codec::Decode,
+        entry::{Data, Version},
+        ring_buffer::ring_buffer,
+    };
+
+    use super::KVStore;
+
+    #[test]
+    fn test_put_get() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.into_path();
+
+        let mmap_path = path.join("mmap.bin");
+        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
+
+        let (pusher, _popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+
+        let meta_path = path.join("meta.bin");
+        let meta_path = meta_path.to_str().unwrap();
+
+        let data_path = path.join("data.bin");
+        let data_path = data_path.to_str().unwrap();
+
+        let mut store = KVStore::new(meta_path, 1024, data_path, 1024, Version::V1, pusher)
+            .expect("KVStore::new failed");
+
+        store
+            .insert(b"pets", "cats".as_bytes())
+            .expect("insert failed");
+        let mut buf = vec![0; 64];
+        store.get(b"pets", &mut buf).expect("key not found");
+
+        let actual = Data::decode(&buf)
+            .expect("failed to deserialize")
+            .into_inner();
+        assert_eq!(actual, b"cats");
     }
 }

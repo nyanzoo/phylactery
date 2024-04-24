@@ -198,7 +198,13 @@ impl<'a> Data<'a> {
         }
     }
 
-    pub fn into_inner(self) -> Vec<u8> {
+    pub fn into_inner(self) -> &'a [u8] {
+        match self {
+            Self::Version1(data) => data.data,
+        }
+    }
+
+    pub const fn size(&self) -> u32 {
         match self {
             Self::Version1(data) => match data {
                 v1::Data::Read(data) => data.data,
