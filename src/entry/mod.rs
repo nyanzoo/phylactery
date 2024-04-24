@@ -179,7 +179,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[repr(C)]
 pub enum Data<'a> {
     Version1(v1::Data<'a>),
@@ -233,6 +233,12 @@ impl<'a> Data<'a> {
             Self::Version1(data) => data.crc,
         }
     }
+
+    pub fn as_mut(self) -> DataMut<'a> {
+        match self {
+            Data::Version1(data) => DataMut::Version1(data.as_mut()),
+        }
+    }
 }
 
     pub fn crc(&self) -> u32 {
@@ -266,6 +272,50 @@ where
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+#[repr(C)]
+pub enum DataMut<'a> {
+    Version1(v1::DataMut<'a>),
+}
+
+impl<'a> DataMut<'a> {
+    pub fn copy_into(self, buf: &mut [u8]) {
+        match self {
+            Self::Version1(data) => data.copy_into(buf),
+        }
+    }
+
+    pub const fn size(&self) -> u32 {
+        match self {
+            Self::Version1(data) => size_of::<Version>() as u32 + data.size(),
+        }
+    }
+
+    pub fn verify(&self) -> Result<(), Error> {
+        match self {
+            Self::Version1(data) => data.verify(),
+        }
+    }
+
+    pub fn crc(&self) -> u32 {
+        match self {
+            Self::Version1(data) => data.crc,
+        }
+    }
+
+    pub fn update(&mut self, update_fn: impl FnOnce(&mut [u8])) {
+        match self {
+            Self::Version1(inner) => inner.update(update_fn),
+        }
+    }
+
+    pub fn as_ref(self) -> Data<'a> {
+        match self {
+            Self::Version1(data) => Data::Version1(data.as_ref()),
+        }
     }
 }
 

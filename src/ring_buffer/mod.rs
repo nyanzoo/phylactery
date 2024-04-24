@@ -417,14 +417,15 @@ where
         metadata.verify()?;
 
         let off = off + Metadata::size(self.version) as u64;
-        let mut data: Data<'_> = self
+        let data: Data<'_> = self
             .buffer
             .decode_at(off as usize, metadata.data_size() as usize)?;
         data.verify()?;
 
-        match &mut data {
-            Data::Version1(data) => update_fn(&mut data.data),
-        }
+        let mut data_mut = data.as_mut();
+        data_mut.update(update_fn);
+
+        let data = data_mut.as_ref();
 
         self.buffer
             .encode_at(off as usize, metadata.data_size() as usize, &data)?;

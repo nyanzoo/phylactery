@@ -1,55 +1,33 @@
 use std::{
-    io::{Cursor, Read, Write},
+    io::{Read, Write},
+    mem::size_of,
     path::PathBuf,
     time::Duration,
 };
 
-use necronomicon::{Decode, Encode};
-
 use crate::{
     buffer::{InMemBuffer, MmapBuffer},
+    codec::{self, Decode, Encode},
     ring_buffer,
 };
 
-#[derive(Debug)]
-pub(crate) struct Tombstone {
-    pub crc: u32,
-    pub file: u64,
-    pub offset: u64,
-    pub len: u64,
+#[derive(serde::Deserialize, serde::Serialize)]
+struct Tombstone {
+    dir: u64,
+    file: u64,
+    offset: u64,
+    len: u64,
 }
 
-impl<W> Encode<W> for Tombstone
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.crc.encode(writer)?;
-        self.file.encode(writer)?;
-        self.offset.encode(writer)?;
-        self.len.encode(writer)?;
-        Ok(())
+impl Encode for Tombstone {
+    fn encode(&self, buf: &mut [u8]) -> Result<(), codec::Error> {
+        Ok(bincode::serialize_into(buf, self)?)
     }
 }
 
-impl<R> Decode<R> for Tombstone
-where
-    R: Read,
-{
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
-    where
-        Self: Sized,
-    {
-        let crc = u32::decode(reader)?;
-        let file = u64::decode(reader)?;
-        let offset = u64::decode(reader)?;
-        let len = u64::decode(reader)?;
-        Ok(Tombstone {
-            crc,
-            file,
-            offset,
-            len,
-        })
+impl Decode<'_> for Tombstone {
+    fn decode(buf: &[u8]) -> Result<Self, codec::Error> {
+        Ok(bincode::deserialize(buf)?)
     }
 }
 
@@ -77,9 +55,6 @@ impl Graveyard {
         Self { dir, popper }
     }
 
-    // The problem is we also need to update the metadata for the dequeue.
-    // We can't just delete the data, we need to update the metadata to say
-    // that the data is no longer there and somewhere else (if just moved).;p[''']
     pub fn bury(self, interval: u64) -> ! {
         let interval = Duration::from_secs(interval);
         loop {
@@ -88,36 +63,27 @@ impl Graveyard {
 
             for tomb in tombs {
                 let file = tomb[0].file;
-                let file = format!("{}.bin", file);
-                let out = self.dir.join(format!("{}.new", file));
+                let dir = tomb[0].dir;
+                let file = format!("{}/{}.bin", dir, file);
+                let out = self.dir.join(format!("{}/{}.new", dir, file));
                 let file = self.dir.join(file);
-
-                let mut has_data = false;
                 // If file doesn't exist, then we have already compacted it, or removed it.
                 if let Ok(mut file) = std::fs::File::open(file.clone()) {
                     let len = file.metadata().expect("no file metadata").len();
                     let mut in_buf = InMemBuffer::new(len);
 
-                    file.read_exact(in_buf.as_mut())
-                        .expect("failed to read file");
+                    file.read_exact(in_buf.as_mut()).expect("failed to read file");
 
                     let out_buf = Self::compact_buf(tomb, in_buf);
 
-                    has_data = !out_buf.is_empty();
-                    has_data &= out_buf.iter().cloned().map(u64::from).sum::<u64>() != 0;
+                    let mut out =
+                        std::fs::File::create(out.clone()).expect("failed to create file");
 
-                    if has_data {
-                        let mut out =
-                            std::fs::File::create(out.clone()).expect("failed to create file");
-
-                        out.write_all(&out_buf).expect("failed to write file");
-                    }
+                    out.write_all(&out_buf).expect("failed to write file");
                 }
 
                 std::fs::remove_file(file.clone()).expect("failed to remove file");
-                if has_data {
-                    std::fs::rename(out, file.clone()).expect("failed to rename file");
-                }
+                std::fs::rename(out, file).expect("failed to rename file");
             }
 
             std::thread::sleep(interval);
@@ -125,18 +91,17 @@ impl Graveyard {
     }
 
     fn collect(&self) -> Vec<Vec<Tombstone>> {
-        let len = 28;
+        let len = size_of::<Tombstone>();
 
         let mut nodes = vec![];
         let mut node = 0;
 
-        let mut buf = vec![0; len];
+        let mut buf = vec![0; 32];
         // If we crash and it happens to be that tombstones map to same spot as different data,
-        // then we will delete data we should keep. Is this true still?
+        // then we will delete data we should keep.
         while let Ok(bytes) = self.popper.pop(&mut buf) {
             assert!(bytes == len, "invalid tombstone length");
-            let tomb =
-                Tombstone::decode(&mut Cursor::new(&mut buf)).expect("failed to decode tombstone");
+            let tomb = Tombstone::decode(&buf).expect("failed to decode tombstone");
 
             if nodes.is_empty() {
                 nodes.push(vec![]);
@@ -146,7 +111,7 @@ impl Graveyard {
                 nodes[node].push(tomb);
             } else {
                 let last = nodes[node].last().expect("no tombstones in node");
-                if tomb.file == last.file {
+                if tomb.file == last.file && tomb.dir == last.dir {
                     nodes[node].push(tomb);
                 } else {
                     node += 1;

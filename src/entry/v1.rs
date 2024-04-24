@@ -146,17 +146,37 @@ impl Metadata {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DataRead {
+#[derive(Clone, Debug, Eq, serde::Deserialize, serde::Serialize)]
+#[repr(C)]
+pub struct Data<'a> {
     // The data of the entry.
     pub(crate) data: Vec<u8>,
     // The crc of the data.
     crc: u32,
 }
 
-impl DataRead {
+impl<'a> PartialEq for Data<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.crc == other.crc
+    }
+}
+
+impl<'a> Data<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        let crc = generate_crc(data);
+        Self { data, crc }
+    }
+
+    pub fn copy_into(self, buf: &mut [u8]) {
+        buf[..self.data.len()].copy_from_slice(self.data);
+    }
+
+    pub const fn size(&self) -> u32 {
+        8 + self.data.len() as u32 + size_of::<u32>() as u32
+    }
+
     pub fn verify(&self) -> Result<(), Error> {
-        let crc = generate_crc(&self.data);
+        let crc = generate_crc(self.data);
         if crc != self.crc {
             return Err(Error::DataCrcMismatch {
                 expected: self.crc,
@@ -167,104 +187,61 @@ impl DataRead {
     }
 }
 
-impl<R> Decode<R> for DataRead
-where
-    R: Read,
-{
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
-    where
-        Self: Sized,
-    {
-        let data = Vec::decode(reader)?;
-        let crc = u32::decode(reader)?;
-        Ok(Self { data, crc })
+    // Might need to come up with different idea here, as it might not work with compiler.
+    // Though we do need a way to modify in-place.
+    #[allow(mutable_transmutes)]
+    pub fn as_mut(self) -> DataMut<'a> {
+        DataMut {
+            data: unsafe { std::mem::transmute(self.data) },
+            crc: self.crc,
+        }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DataWrite<'a> {
+#[derive(Debug, Eq)]
+#[repr(C)]
+pub struct DataMut<'a> {
     // The data of the entry.
-    pub(crate) data: &'a [u8],
+    pub data: &'a mut [u8],
     // The crc of the data.
-    pub(crate) crc: u32,
+    pub crc: u32,
 }
 
-impl<W> Encode<W> for DataWrite<'_>
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.data.encode(writer)?;
-        self.crc.encode(writer)?;
-        Ok(())
+impl<'a> PartialEq for DataMut<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.crc == other.crc
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Data<'a> {
-    Read(DataRead),
-    Write(DataWrite<'a>),
-}
-
-impl<W> Encode<W> for Data<'_>
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        match self {
-            Self::Read(_) => panic!("cannot encode read data"),
-            Self::Write(data) => data.encode(writer),
-        }
-    }
-}
-
-impl<R> Decode<R> for Data<'_>
-where
-    R: Read,
-{
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
-    where
-        Self: Sized,
-    {
-        let data = DataRead::decode(reader)?;
-        Ok(Self::Read(data))
-    }
-}
-
-impl<'a> Data<'a> {
-    pub fn write(data: &'a [u8]) -> Self {
-        let crc = generate_crc(data);
-        Self::Write(DataWrite { data, crc })
-    }
-
+impl<'a> DataMut<'a> {
     pub fn copy_into(self, buf: &mut [u8]) {
-        match self {
-            Self::Read(DataRead { data, .. }) => {
-                let len = std::cmp::min(buf.len(), data.len());
-                buf[..len].copy_from_slice(&data[..len]);
-            }
-            Self::Write(_) => panic!("cannot copy write data"),
-        }
+        buf[..self.data.len()].copy_from_slice(self.data);
     }
 
-    pub fn crc(&self) -> u32 {
-        match self {
-            Self::Read(DataRead { crc, .. }) => *crc,
-            Self::Write(DataWrite { crc, .. }) => *crc,
-        }
-    }
-
-    pub fn struct_size(&self) -> u32 {
-        match self {
-            Self::Read(DataRead { data, .. }) => 2 + data.len() as u32 + size_of::<u32>() as u32,
-            Self::Write(DataWrite { data, .. }) => 2 + data.len() as u32 + size_of::<u32>() as u32,
-        }
+    pub const fn size(&self) -> u32 {
+        8 + self.data.len() as u32 + size_of::<u32>() as u32
     }
 
     pub fn verify(&self) -> Result<(), Error> {
-        match self {
-            Self::Read(data) => data.verify(),
-            Self::Write(_) => Err(Error::NotReadData),
+        let crc = generate_crc(self.data);
+        if crc != self.crc {
+            return Err(Error::DataCrcMismatch {
+                expected: self.crc,
+                actual: crc,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn update(&mut self, update_fn: impl FnOnce(&mut [u8])) {
+        update_fn(self.data);
+        self.crc = generate_crc(self.data);
+    }
+
+    pub fn as_ref(self) -> Data<'a> {
+        Data {
+            data: unsafe { std::mem::transmute(self.data) },
+            crc: self.crc,
         }
     }
 }

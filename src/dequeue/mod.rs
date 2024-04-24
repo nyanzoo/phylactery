@@ -1,6 +1,6 @@
 use std::{
     fs::{create_dir_all, OpenOptions},
-    io::{Cursor, Read, Write},
+    io::{Read, Write},
     os::unix::prelude::FileExt,
     path::Path,
     ptr::NonNull,
@@ -120,7 +120,7 @@ pub enum Pop {
 pub struct Push {
     pub file: u64,
     pub offset: u64,
-    pub length: u64,
+    pub crc: u32,
 }
 
 struct Inner<S>
@@ -226,7 +226,7 @@ where
         }
     }
 
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
@@ -234,7 +234,11 @@ where
 
         let write = unsafe { write.as_ref() };
         match write.push(buf) {
-            Ok(data) => Ok(data),
+            Ok(node::Push { offset, crc }) => Ok(Push {
+                file: self.backing_generator.write_idx(),
+                offset,
+                crc,
+            }),
             Err(Error::NodeFull) => {
                 let File {
                     file: mut next,
@@ -245,7 +249,7 @@ where
 
                 let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
 
-                let data = node.push(buf)?;
+                let node::Push { offset, crc } = node.push(buf)?;
 
                 let node = Box::into_raw(Box::new(node));
 
@@ -256,7 +260,11 @@ where
                     unsafe { drop(Box::from_raw(write_ptr)) };
                 }
 
-                Ok(data)
+                Ok(Push {
+                    file: index,
+                    offset,
+                    crc,
+                })
             }
             Err(e) => Err(e),
         }
@@ -347,7 +355,7 @@ where
         Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
     }
 
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         self.0.push(buf)
     }
 
@@ -381,7 +389,7 @@ where
         Self(dequeue)
     }
 
-    pub fn push<'a>(&self, buf: &'a [u8]) -> Result<Data<'a>, Error> {
+    pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
         self.0.push(buf)
     }
 
