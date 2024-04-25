@@ -1,12 +1,14 @@
 use std::{cell::UnsafeCell, io::Cursor};
 
-use necronomicon::{Decode, Encode};
+use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
-use super::{Buffer, Error};
+use crate::Error;
+
+use super::Buffer;
 
 pub struct InMemBuffer(UnsafeCell<Vec<u8>>);
 
-#[cfg_attr(nightly, no_coverage)]
+#[cfg_attr(nightly, coverage(off))]
 #[cfg(test)]
 impl Clone for InMemBuffer {
     fn clone(&self) -> Self {
@@ -31,6 +33,22 @@ impl Buffer for InMemBuffer {
         let shared = unsafe { (*self.0.get()).as_mut_slice() };
         let shared = &mut shared[off..(off + len)];
         let res = T::decode(&mut Cursor::new(shared))?;
+        Ok(res)
+    }
+
+    fn decode_at_owned<'a, T, O>(
+        &'a self,
+        off: usize,
+        len: usize,
+        buffer: &mut O,
+    ) -> Result<T, Error>
+    where
+        O: Owned,
+        T: DecodeOwned<Cursor<&'a [u8]>, O>,
+    {
+        let shared = unsafe { (*self.0.get()).as_mut_slice() };
+        let shared = &mut shared[off..(off + len)];
+        let res = T::decode_owned(&mut Cursor::new(shared), buffer)?;
         Ok(res)
     }
 

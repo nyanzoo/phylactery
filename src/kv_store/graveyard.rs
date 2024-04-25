@@ -1,17 +1,23 @@
 use std::{
     io::{Cursor, Read, Write},
+    mem::size_of,
     path::PathBuf,
     time::Duration,
 };
 
-use necronomicon::{Decode, Encode};
+use log::trace;
+use necronomicon::{Decode, Encode, Pool, PoolImpl, Shared};
 
 use crate::{
     buffer::{InMemBuffer, MmapBuffer},
+    entry::Metadata,
     ring_buffer,
 };
 
+pub const TOMBSTONE_LEN: usize = size_of::<Tombstone>();
+
 #[derive(Debug)]
+#[repr(C, packed)]
 pub(crate) struct Tombstone {
     pub crc: u32,
     pub file: u64,
@@ -24,10 +30,18 @@ where
     W: Write,
 {
     fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.crc.encode(writer)?;
-        self.file.encode(writer)?;
-        self.offset.encode(writer)?;
-        self.len.encode(writer)?;
+        let crc: u32 = unsafe { std::ptr::addr_of!(self.crc).read_unaligned() };
+        crc.encode(writer)?;
+
+        let file: u64 = unsafe { std::ptr::addr_of!(self.file).read_unaligned() };
+        file.encode(writer)?;
+
+        let offset: u64 = unsafe { std::ptr::addr_of!(self.offset).read_unaligned() };
+        offset.encode(writer)?;
+
+        let len: u64 = unsafe { std::ptr::addr_of!(self.len).read_unaligned() };
+        len.encode(writer)?;
+
         Ok(())
     }
 }
@@ -44,7 +58,7 @@ where
         let file = u64::decode(reader)?;
         let offset = u64::decode(reader)?;
         let len = u64::decode(reader)?;
-        Ok(Tombstone {
+        Ok(Self {
             crc,
             file,
             offset,
@@ -70,11 +84,21 @@ where
 pub struct Graveyard {
     dir: PathBuf,
     popper: ring_buffer::Popper<MmapBuffer>,
+    pool: PoolImpl,
 }
 
 impl Graveyard {
     pub fn new(dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
-        Self { dir, popper }
+        let block_size = usize::try_from(Metadata::struct_size(crate::entry::Version::V1))
+            .expect("u32 -> usize")
+            + TOMBSTONE_LEN;
+
+        trace!("block_size: {}", block_size);
+        Self {
+            dir,
+            popper,
+            pool: PoolImpl::new(block_size, 1024 * 1024),
+        }
     }
 
     // The problem is we also need to update the metadata for the dequeue.
@@ -88,14 +112,14 @@ impl Graveyard {
 
             for tomb in tombs {
                 let file = tomb[0].file;
-                let file = format!("{}.bin", file);
-                let out = self.dir.join(format!("{}.new", file));
-                let file = self.dir.join(file);
+                let path = format!("{}.bin", file);
+                let out = self.dir.join(format!("{}.new", path));
+                let path = self.dir.join(path);
 
-                let mut has_data = false;
                 // If file doesn't exist, then we have already compacted it, or removed it.
-                if let Ok(mut file) = std::fs::File::open(file.clone()) {
+                if let Ok(mut file) = std::fs::File::open(path.clone()) {
                     let len = file.metadata().expect("no file metadata").len();
+                    trace!("compacting file: {} len: {}", path.display(), len);
                     let mut in_buf = InMemBuffer::new(len);
 
                     file.read_exact(in_buf.as_mut())
@@ -103,7 +127,7 @@ impl Graveyard {
 
                     let out_buf = Self::compact_buf(tomb, in_buf);
 
-                    has_data = !out_buf.is_empty();
+                    let mut has_data = !out_buf.is_empty();
                     has_data &= out_buf.iter().cloned().map(u64::from).sum::<u64>() != 0;
 
                     if has_data {
@@ -112,11 +136,11 @@ impl Graveyard {
 
                         out.write_all(&out_buf).expect("failed to write file");
                     }
-                }
 
-                std::fs::remove_file(file.clone()).expect("failed to remove file");
-                if has_data {
-                    std::fs::rename(out, file.clone()).expect("failed to rename file");
+                    std::fs::remove_file(path.clone()).expect("failed to remove file");
+                    if has_data {
+                        std::fs::rename(out, path.clone()).expect("failed to rename file");
+                    }
                 }
             }
 
@@ -125,34 +149,38 @@ impl Graveyard {
     }
 
     fn collect(&self) -> Vec<Vec<Tombstone>> {
-        let len = 28;
-
         let mut nodes = vec![];
         let mut node = 0;
 
-        let mut buf = vec![0; len];
-        // If we crash and it happens to be that tombstones map to same spot as different data,
-        // then we will delete data we should keep. Is this true still?
-        while let Ok(bytes) = self.popper.pop(&mut buf) {
-            assert!(bytes == len, "invalid tombstone length");
-            let tomb =
-                Tombstone::decode(&mut Cursor::new(&mut buf)).expect("failed to decode tombstone");
+        loop {
+            let mut buf = self.pool.acquire().expect("failed to acquire buffer");
 
-            if nodes.is_empty() {
-                nodes.push(vec![]);
-            }
+            // If we crash and it happens to be that tombstones map to same spot as different data,
+            // then we will delete data we should keep. Is this true still?
+            if let Ok(data) = self.popper.pop(&mut buf) {
+                data.verify().expect("failed to verify data");
+                let data = data.into_inner();
+                let tomb = Tombstone::decode(&mut Cursor::new(data.data().as_slice()))
+                    .expect("failed to decode tombstone");
 
-            if nodes[node].is_empty() {
-                nodes[node].push(tomb);
-            } else {
-                let last = nodes[node].last().expect("no tombstones in node");
-                if tomb.file == last.file {
+                if nodes.is_empty() {
+                    nodes.push(vec![]);
+                }
+
+                if nodes[node].is_empty() {
                     nodes[node].push(tomb);
                 } else {
-                    node += 1;
-                    nodes.push(vec![]);
-                    nodes[node].push(tomb);
+                    let last = nodes[node].last().expect("no tombstones in node");
+                    if tomb.file == last.file {
+                        nodes[node].push(tomb);
+                    } else {
+                        node += 1;
+                        nodes.push(vec![]);
+                        nodes[node].push(tomb);
+                    }
                 }
+            } else {
+                break;
             }
         }
 

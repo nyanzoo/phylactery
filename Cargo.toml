@@ -10,10 +10,12 @@ name = "phylactery"
 
 [dependencies]
 crc32fast = "1"
+log = "0.4"
 memmap2 = "0"
+serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 
-necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "master" }
+necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop" }
 # necronomicon = { path = "../necronomicon" }
 
 [dev-dependencies]
@@ -21,6 +23,11 @@ coverage-helper = "0"
 criterion = "0.5"
 matches = "0"
 tempfile = "3"
+test-case = "3"
+
+necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop", features = [
+    "test",
+] }
 
 [[bench]]
 name = "ring_buffer"
