@@ -142,6 +142,7 @@ where
         let mut write_ptr = self.write_ptr.load(Ordering::Acquire);
         let entry = self.entry.load(Ordering::Acquire) + 1;
         let has_data = self.has_data.load(Ordering::Acquire);
+        trace!("push original read_ptr: {}, write_ptr: {}", read_ptr, write_ptr);
 
         let len = buf.len() as u32;
         let entry_size = Metadata::struct_size(self.version) as u64
