@@ -6,13 +6,15 @@ use std::{
     },
 };
 
+use log::trace;
+
+use necronomicon::{BinaryData, Encode, Owned, Shared};
+
 use crate::{
     buffer::Buffer,
     entry::{crc_check, last_metadata, Metadata, Readable, Version, Writable},
     Error,
 };
-
-use necronomicon::{BinaryData, Encode, Owned, Shared};
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
 where
@@ -294,6 +296,7 @@ where
         let mut read_ptr = self.read_ptr.load(Ordering::Acquire);
         let write_ptr = self.write_ptr.load(Ordering::Acquire);
         let has_data = self.has_data.load(Ordering::Acquire);
+        trace!("original read_ptr: {}, write_ptr: {}", read_ptr, write_ptr);
 
         // If the buffer is empty, we can't read.
         if !has_data {
@@ -305,6 +308,11 @@ where
             read_ptr = 0;
         }
 
+        trace!(
+            "maybe wrap read_ptr: {}, write_ptr: {}",
+            read_ptr,
+            write_ptr
+        );
         let metadata = self.buffer.decode_at::<Metadata>(
             read_ptr as usize,
             Metadata::struct_size(self.version) as usize,
@@ -1054,6 +1062,63 @@ mod tests {
     }
 
     #[test]
+    fn test_recover() {
+        let buffer = MmapBuffer::new(
+            "/home/robert/Documents/GitHub/lichdom/lich/mmap-be1.bin",
+            1024 * 1024,
+        )
+        .expect("buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
+
+        let pool = PoolImpl::new(1024, 1024);
+        loop {
+            let mut buf = pool.acquire().expect("acquire");
+            match ring_buffer.pop(&mut buf) {
+                Ok(data) => {
+                    println!("{:?}", data);
+                }
+                Err(Error::BufferEmpty) => {
+                    break;
+                }
+                Err(err) => {
+                    panic!("unexpected error: {:?}", err);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_1_million_push_pop() {
+        let file = tempfile::tempdir().unwrap();
+        let file = file.path().join("test");
+        let buffer = MmapBuffer::new(file.clone(), 1024 * 1024).expect("buffer");
+        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
+
+        let data = [7; 131];
+        let pool = PoolImpl::new(1024, 1024);
+
+        // fill buffer
+        let mut i = 0;
+        loop {
+            while let Err(err) = ring_buffer.push(&data) {
+                if let Error::EntryTooBig { .. } = err {
+                    let mut buf = pool.acquire().expect("acquire");
+                    if let Ok(readable) = ring_buffer.pop(&mut buf) {
+                        assert_eq!(readable.into_inner().data().as_slice(), data);
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            i += 1;
+            if i == 1_000_000 {
+                break;
+            }
+        }
+    }
+
+    #[test]
     fn thread_safety_test() {
         let buffer = InMemBuffer::new(1024);
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
@@ -1077,13 +1142,13 @@ mod tests {
                             let num = split[2].parse::<u32>().unwrap();
                             let s = split[0].to_string() + " " + split[1];
                             reads.push((num, s));
-                            println!("read: {} now {}", num, reads.len());
-                            if reads.len() == 100 {
+                            // println!("read: {} now {}", num, reads.len());
+                            if reads.len() == 100_000 {
                                 break;
                             }
                         }
                         Err(Error::BufferEmpty) => {
-                            println!("buffer empty");
+                            // println!("buffer empty");
                             sleep(Duration::from_millis(10));
                             continue;
                         }
@@ -1101,7 +1166,7 @@ mod tests {
         };
 
         let writer = spawn(move || {
-            for i in 0..100 {
+            for i in 0..100_000 {
                 let data = format!("hello world {}", i);
                 let data = data.as_bytes();
 
