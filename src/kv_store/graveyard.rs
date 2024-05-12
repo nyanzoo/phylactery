@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use log::trace;
+use log::{debug, trace};
 use necronomicon::{Decode, Encode, Pool, PoolImpl, Shared};
 
 use crate::{
@@ -113,6 +113,10 @@ impl Graveyard {
         loop {
             // Collect all the files to compact.
             let tombs = self.collect();
+            debug!(
+                "compacting {} tomb(s)",
+                tombs.iter().map(|x| x.len()).sum::<usize>()
+            );
 
             for tomb in tombs {
                 let file = tomb[0].file;
@@ -132,7 +136,7 @@ impl Graveyard {
                     let out_buf = Self::compact_buf(tomb, in_buf);
 
                     let mut has_data = !out_buf.is_empty();
-                    has_data &= out_buf.iter().cloned().map(u64::from).sum::<u64>() != 0;
+                    has_data &= out_buf.iter().copied().map(u64::from).sum::<u64>() != 0;
 
                     if has_data {
                         let mut out =
