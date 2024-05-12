@@ -60,13 +60,13 @@ pub(super) enum BufferOwner {
 }
 
 impl necronomicon::BufferOwner for BufferOwner {
-    fn why(&self) -> String {
+    fn why(&self) -> &'static str {
         match self {
-            Self::Graveyard => "graveyard".to_owned(),
-            Self::Delete => "store delete".to_owned(),
-            Self::Get => "store get".to_owned(),
-            Self::Init => "store init".to_owned(),
-            Self::Insert => "store insert".to_owned(),
+            Self::Graveyard => "graveyard",
+            Self::Delete => "store delete",
+            Self::Get => "store get",
+            Self::Init => "store init",
+            Self::Insert => "store insert",
         }
     }
 }
