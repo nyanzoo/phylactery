@@ -436,7 +436,7 @@ mod test {
         let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut buf = pool.acquire().unwrap();
+        let mut buf = pool.acquire("pop").unwrap();
         dequeue.push(b"hello kitties").unwrap();
         assert_matches!(dequeue.pop(&mut buf), Ok(Pop::WaitForFlush));
         dequeue.flush().unwrap();
@@ -459,14 +459,14 @@ mod test {
         dequeue.flush().unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut buf = pool.acquire().unwrap();
+        let mut buf = pool.acquire("pop").unwrap();
         let pop = dequeue.pop(&mut buf).unwrap();
         let Pop::Popped(data) = pop else {
             panic!("expected Pop::Popped");
         };
         assert_eq!(&data.into_inner().data().as_slice(), b"hello kitties");
 
-        let mut buf = pool.acquire().unwrap();
+        let mut buf = pool.acquire("pop").unwrap();
         let pop = dequeue.pop(&mut buf).unwrap();
         let Pop::Popped(data) = pop else {
             panic!("expected Pop::Popped");
@@ -490,7 +490,7 @@ mod test {
         // Because we read from the node in mem we also need to know to skip the backing buffer as well...
         for i in 0..100 {
             let expected = format!("hello kitties {i}");
-            let mut buf = pool.acquire().unwrap();
+            let mut buf = pool.acquire("pop").unwrap();
             let pop = dequeue.pop(&mut buf).unwrap();
 
             let Pop::Popped(data) = pop else {
@@ -516,7 +516,7 @@ mod test {
         let pool = PoolImpl::new(1024, 1024);
         for i in 0..100 {
             let expected = format!("hello kitties {i}");
-            let mut buf = pool.acquire().unwrap();
+            let mut buf = pool.acquire("pop").unwrap();
             loop {
                 if let Ok(Pop::Popped(data)) = rx.pop(&mut buf) {
                     assert_eq!(data.into_inner().data().as_slice(), expected.as_bytes());
@@ -533,7 +533,7 @@ mod test {
         let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut buf = pool.acquire().unwrap();
+        let mut buf = pool.acquire("pop").unwrap();
         assert_matches!(dequeue.pop(&mut buf), Ok(Pop::WaitForFlush));
     }
 }

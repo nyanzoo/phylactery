@@ -510,7 +510,7 @@ mod tests {
         let pool = PoolImpl::new(1024, 1024);
 
         for _ in 0..3 {
-            let mut buf = pool.acquire().expect("acquire");
+            let mut buf = pool.acquire("pop").expect("acquire");
             let data = ring_buffer.pop(&mut buf).expect("pop");
             assert_eq!(&data.into_inner().data().as_slice()[..7], b"kittens");
         }
@@ -554,25 +554,25 @@ mod tests {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data = ring_buffer.peek(&mut buf).unwrap();
         let data = data.into_inner();
         assert_eq!(data.len(), 7);
         assert_eq!(data.data().as_slice(), b"kittens");
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data = ring_buffer.peek(&mut buf).unwrap();
         let data = data.into_inner();
         assert_eq!(data.len(), 7);
         assert_eq!(data.data().as_slice(), b"kittens");
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data = ring_buffer.pop(&mut buf).unwrap();
         let data = data.into_inner();
         assert_eq!(data.len(), 7);
         assert_eq!(data.data().as_slice(), b"kittens");
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         assert!(ring_buffer.peek(&mut buf).is_err());
     }
 
@@ -582,7 +582,7 @@ mod tests {
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
 
         let res = ring_buffer.pop(&mut buf).unwrap_err();
         assert_matches!(res, Error::BufferEmpty);
@@ -617,7 +617,7 @@ mod tests {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
 
         let result = ring_buffer.pop(&mut buf);
         assert_matches!(
@@ -667,7 +667,7 @@ mod tests {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let result = ring_buffer.pop(&mut buf);
         assert_matches!(
             result.unwrap_err(),
@@ -705,7 +705,7 @@ mod tests {
 
         let pool = PoolImpl::new(1, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let result = ring_buffer.pop(&mut buf);
         assert_matches!(result.unwrap_err(), Error::BufferTooSmall(1, 11));
     }
@@ -750,7 +750,7 @@ mod tests {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data = ring_buffer.pop(&mut buf).unwrap();
         assert_matches!(data.into_inner().data().as_slice(), b"hello world");
     }
@@ -804,7 +804,7 @@ mod tests {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data = ring_buffer.pop(&mut buf).unwrap();
         assert_matches!(data.into_inner().data().as_slice(), b"hello world");
     }
@@ -851,7 +851,7 @@ mod tests {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data = ring_buffer.pop(&mut buf).unwrap();
         assert_matches!(data.into_inner().data().as_slice(), b"hello world");
     }
@@ -891,7 +891,7 @@ mod tests {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data = ring_buffer.pop(&mut buf).unwrap();
         assert_matches!(data.into_inner().data().as_slice(), b"hello world");
     }
@@ -1005,7 +1005,7 @@ mod tests {
         let end = Metadata::Version1(meta).data_size() as usize + start;
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut buf = pool.acquire().expect("acquire");
+        let mut buf = pool.acquire("pop").expect("acquire");
         let data =
             Readable::decode_owned(&mut Cursor::new(&mut data[start..end]), &mut buf).unwrap();
         data.verify().unwrap();
@@ -1034,7 +1034,7 @@ mod tests {
 
         // read half
         loop {
-            let mut buf = pool.acquire().expect("acquire");
+            let mut buf = pool.acquire("pop").expect("acquire");
             if let Ok(data) = ring_buffer.pop(&mut buf) {
                 reads
                     .push(String::from_utf8(data.into_inner().data().as_slice().to_vec()).unwrap());
@@ -1050,7 +1050,7 @@ mod tests {
 
         // read all
         loop {
-            let mut buf = pool.acquire().expect("acquire");
+            let mut buf = pool.acquire("pop").expect("acquire");
             if let Ok(data) = ring_buffer.pop(&mut buf) {
                 reads
                     .push(String::from_utf8(data.into_inner().data().as_slice().to_vec()).unwrap());
@@ -1080,7 +1080,7 @@ mod tests {
         loop {
             while let Err(err) = ring_buffer.push(&data) {
                 if let Error::EntryTooBig { .. } = err {
-                    let mut buf = pool.acquire().expect("acquire");
+                    let mut buf = pool.acquire("pop").expect("acquire");
                     if let Ok(readable) = ring_buffer.pop(&mut buf) {
                         assert_eq!(readable.into_inner().data().as_slice(), data);
                     } else {
@@ -1109,7 +1109,7 @@ mod tests {
                 let mut retries: u8 = 10;
                 let mut i = 0;
                 loop {
-                    let mut buf = pool.acquire().expect("acquire");
+                    let mut buf = pool.acquire("pop").expect("acquire");
                     match ring_buffer.pop(&mut buf) {
                         Ok(data) => {
                             retries = 10;

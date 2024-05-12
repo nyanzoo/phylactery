@@ -50,3 +50,23 @@ where
         }
     }
 }
+
+pub(super) enum BufferOwner {
+    Graveyard,
+    Delete,
+    Get,
+    Init,
+    Insert,
+}
+
+impl necronomicon::BufferOwner for BufferOwner {
+    fn why(&self) -> String {
+        match self {
+            Self::Graveyard => "graveyard".to_owned(),
+            Self::Delete => "store delete".to_owned(),
+            Self::Get => "store get".to_owned(),
+            Self::Init => "store init".to_owned(),
+            Self::Insert => "store insert".to_owned(),
+        }
+    }
+}

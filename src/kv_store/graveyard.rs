@@ -14,6 +14,8 @@ use crate::{
     ring_buffer,
 };
 
+use super::BufferOwner;
+
 pub const TOMBSTONE_LEN: usize = size_of::<Tombstone>();
 
 #[derive(Debug)]
@@ -155,7 +157,10 @@ impl Graveyard {
         let mut node = 0;
 
         loop {
-            let mut buf = self.pool.acquire().expect("failed to acquire buffer");
+            let mut buf = self
+                .pool
+                .acquire(BufferOwner::Graveyard)
+                .expect("failed to acquire buffer");
 
             // If we crash and it happens to be that tombstones map to same spot as different data,
             // then we will delete data we should keep. Is this true still?
