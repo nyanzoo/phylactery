@@ -27,6 +27,7 @@ test-case = "3"
 
 necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop", features = [
     "test",
+    "timeout",
 ] }
 
 necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop", features = [
@@ -44,3 +45,8 @@ harness = false
 [[bench]]
 name = "kv_store"
 harness = false
+
+
+[features]
+default = []
+timeout = ["necronomicon/timeout"]
