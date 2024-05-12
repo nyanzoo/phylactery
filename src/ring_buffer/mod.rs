@@ -138,11 +138,15 @@ where
             return Err(Error::EmptyData);
         }
 
-        let read_ptr = self.read_ptr.load(Ordering::Acquire);
-        let mut write_ptr = self.write_ptr.load(Ordering::Acquire);
-        let entry = self.entry.load(Ordering::Acquire) + 1;
-        let has_data = self.has_data.load(Ordering::Acquire);
-        trace!("push original read_ptr: {}, write_ptr: {}", read_ptr, write_ptr);
+        let read_ptr = self.read_ptr.load(Ordering::SeqCst);
+        let mut write_ptr = self.write_ptr.load(Ordering::SeqCst);
+        let entry = self.entry.load(Ordering::SeqCst) + 1;
+        let has_data = self.has_data.load(Ordering::SeqCst);
+        trace!(
+            "push original read_ptr: {}, write_ptr: {}",
+            read_ptr,
+            write_ptr
+        );
 
         let len = buf.len() as u32;
         let entry_size = Metadata::struct_size(self.version) as u64
@@ -229,9 +233,9 @@ where
         write_ptr += metadata.data_size() as u64;
         write_ptr %= self.buffer.capacity();
 
-        self.write_ptr.store(write_ptr, Ordering::Release);
-        self.entry.store(entry, Ordering::Release);
-        self.has_data.store(true, Ordering::Release);
+        self.write_ptr.store(write_ptr, Ordering::SeqCst);
+        self.entry.store(entry, Ordering::SeqCst);
+        self.has_data.store(true, Ordering::SeqCst);
 
         Ok(location)
     }
@@ -294,9 +298,9 @@ where
     where
         O: Owned,
     {
-        let mut read_ptr = self.read_ptr.load(Ordering::Acquire);
-        let write_ptr = self.write_ptr.load(Ordering::Acquire);
-        let has_data = self.has_data.load(Ordering::Acquire);
+        let mut read_ptr = self.read_ptr.load(Ordering::SeqCst);
+        let write_ptr = self.write_ptr.load(Ordering::SeqCst);
+        let has_data = self.has_data.load(Ordering::SeqCst);
         trace!("original read_ptr: {}, write_ptr: {}", read_ptr, write_ptr);
 
         // If the buffer is empty, we can't read.
@@ -404,9 +408,8 @@ where
 
         read_ptr %= self.buffer.capacity();
         if !peek {
-            self.read_ptr.store(read_ptr, Ordering::Release);
-            self.has_data
-                .store(read_ptr != write_ptr, Ordering::Release);
+            self.read_ptr.store(read_ptr, Ordering::SeqCst);
+            self.has_data.store(read_ptr != write_ptr, Ordering::SeqCst);
         }
         Ok(data)
     }
@@ -534,7 +537,7 @@ mod tests {
 
     use coverage_helper::test;
     use matches::assert_matches;
-    use necronomicon::{Decode, DecodeOwned, Encode, Pool, PoolImpl, Shared};
+    use necronomicon::{Decode, DecodeOwned, Encode, Pool, PoolImpl, Shared, SharedImpl};
 
     use crate::{
         buffer::{InMemBuffer, MmapBuffer},
@@ -568,29 +571,29 @@ mod tests {
         // We don't write the read ptr on reads, so to test we do another write.
         ring_buffer.push(b"kittens").expect("push");
 
-        let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::Acquire);
-        let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::Acquire);
-        let expected_has_data = ring_buffer.inner().has_data.load(Ordering::Acquire);
-        let expected_entry = ring_buffer.inner().entry.load(Ordering::Acquire);
+        let expected_read_ptr = ring_buffer.inner().read_ptr.load(Ordering::SeqCst);
+        let expected_write_ptr = ring_buffer.inner().write_ptr.load(Ordering::SeqCst);
+        let expected_has_data = ring_buffer.inner().has_data.load(Ordering::SeqCst);
+        let expected_entry = ring_buffer.inner().entry.load(Ordering::SeqCst);
 
         let buffer1 =
             MmapBuffer::new(dir.path().to_path_buf().join("test_buffer"), 1024).expect("buffer");
 
         let ring_buffer2 = RingBuffer::new(buffer1, Version::V1).expect("new buffer");
         assert_eq!(
-            ring_buffer2.inner().read_ptr.load(Ordering::Acquire),
+            ring_buffer2.inner().read_ptr.load(Ordering::SeqCst),
             expected_read_ptr
         );
         assert_eq!(
-            ring_buffer2.inner().write_ptr.load(Ordering::Acquire),
+            ring_buffer2.inner().write_ptr.load(Ordering::SeqCst),
             expected_write_ptr
         );
         assert_eq!(
-            ring_buffer2.inner().has_data.load(Ordering::Acquire),
+            ring_buffer2.inner().has_data.load(Ordering::SeqCst),
             expected_has_data
         );
         assert_eq!(
-            ring_buffer2.inner().entry.load(Ordering::Acquire),
+            ring_buffer2.inner().entry.load(Ordering::SeqCst),
             expected_entry
         );
     }
@@ -647,8 +650,8 @@ mod tests {
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(20, Ordering::Release);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .fetch_add(20, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let mut meta = Metadata::new(Version::V1, 1, 4, 10, 10);
         match &mut meta {
@@ -688,8 +691,8 @@ mod tests {
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(512, Ordering::Release);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .fetch_add(512, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -737,8 +740,8 @@ mod tests {
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(50, Ordering::Release);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .fetch_add(50, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -769,16 +772,16 @@ mod tests {
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
-        ring_buffer.inner().write_ptr.store(0, Ordering::Release);
+        ring_buffer.inner().write_ptr.store(0, Ordering::SeqCst);
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
         ring_buffer
             .inner()
             .read_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -815,16 +818,16 @@ mod tests {
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
-        ring_buffer.inner().write_ptr.store(0, Ordering::Release);
+        ring_buffer.inner().write_ptr.store(0, Ordering::SeqCst);
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
         ring_buffer
             .inner()
             .read_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -867,16 +870,16 @@ mod tests {
         let file = file.path().join("test");
         let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
-        ring_buffer.inner().write_ptr.store(0, Ordering::Release);
+        ring_buffer.inner().write_ptr.store(0, Ordering::SeqCst);
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
         ring_buffer
             .inner()
             .read_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -915,8 +918,8 @@ mod tests {
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(50, Ordering::Release);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .fetch_add(50, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -971,7 +974,7 @@ mod tests {
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
 
         let data = &[0u8; 40];
         assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig { .. }));
@@ -989,11 +992,11 @@ mod tests {
         ring_buffer
             .inner()
             .write_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::Acquire);
+            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
         ring_buffer
             .inner()
             .read_ptr
-            .fetch_add(READ_WRAP as u64, Ordering::Acquire);
+            .fetch_add(READ_WRAP as u64, Ordering::SeqCst);
 
         let data = &[0u8; 40];
         assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig { .. }));
@@ -1011,12 +1014,12 @@ mod tests {
         ring_buffer
             .inner()
             .write_ptr
-            .store(METADATA_SPOT as u64, Ordering::Release);
+            .store(METADATA_SPOT as u64, Ordering::SeqCst);
         ring_buffer
             .inner()
             .read_ptr
-            .store(READ_WRAP as u64, Ordering::Release);
-        ring_buffer.inner().has_data.store(true, Ordering::Release);
+            .store(READ_WRAP as u64, Ordering::SeqCst);
+        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
 
         let data = b"hello world 19";
         assert_matches!(ring_buffer.push(data), Err(Error::EntryTooBig { .. }));
@@ -1116,32 +1119,6 @@ mod tests {
     }
 
     #[test]
-    fn test_recover() {
-        let buffer = MmapBuffer::new(
-            "/home/robert/Documents/GitHub/lichdom/lich/mmap-be1.bin",
-            1024 * 1024,
-        )
-        .expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
-
-        let pool = PoolImpl::new(1024, 1024);
-        loop {
-            let mut buf = pool.acquire().expect("acquire");
-            match ring_buffer.pop(&mut buf) {
-                Ok(data) => {
-                    println!("{:?}", data);
-                }
-                Err(Error::BufferEmpty) => {
-                    break;
-                }
-                Err(err) => {
-                    panic!("unexpected error: {:?}", err);
-                }
-            }
-        }
-    }
-
-    #[test]
     fn test_1_million_push_pop() {
         let file = tempfile::tempdir().unwrap();
         let file = file.path().join("test");
@@ -1174,63 +1151,55 @@ mod tests {
 
     #[test]
     fn thread_safety_test() {
+        const ENTRIES: usize = 100_000;
         let buffer = InMemBuffer::new(1024);
         let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
 
         let reader = {
             let ring_buffer = ring_buffer.clone();
             spawn(move || {
-                let mut reads = vec![];
                 let pool = PoolImpl::new(1024, 1024);
-
+                let mut retries: u8 = 10;
+                let mut i = 0;
                 loop {
                     let mut buf = pool.acquire().expect("acquire");
                     match ring_buffer.pop(&mut buf) {
                         Ok(data) => {
-                            let s = unsafe {
-                                String::from_utf8_unchecked(
-                                    data.into_inner().data().as_slice().to_vec(),
-                                )
-                            };
-                            let split: Vec<_> = s.split(' ').collect();
-                            let num = split[2].parse::<u32>().unwrap();
-                            let s = split[0].to_string() + " " + split[1];
-                            reads.push((num, s));
-                            // println!("read: {} now {}", num, reads.len());
-                            if reads.len() == 100_000 {
+                            retries = 10;
+                            verify_data(data, i);
+                            i += 1;
+                            if i == ENTRIES {
                                 break;
                             }
                         }
                         Err(Error::BufferEmpty) => {
-                            // println!("buffer empty");
-                            sleep(Duration::from_millis(10));
+                            if retries == 0 {
+                                panic!("retries exhausted");
+                            }
+
+                            sleep(Duration::from_millis(1));
+                            retries -= 1;
                             continue;
                         }
                         Err(err) => {
                             panic!("unexpected error: {:?}", err);
                         }
                     }
-                }
-                reads.sort();
-                for (i, (num, msg)) in reads.into_iter().enumerate() {
-                    assert_eq!(msg, "hello world".to_string());
-                    assert_eq!(i as u32, num);
                 }
             })
         };
 
         let writer = spawn(move || {
-            for i in 0..100_000 {
-                let data = format!("hello world {}", i);
-                let data = data.as_bytes();
+            for i in 0..ENTRIES {
+                let data = test_data(i);
 
                 loop {
-                    match ring_buffer.push(data) {
+                    match ring_buffer.push(&data) {
                         Ok(_) => {
                             break;
                         }
                         Err(Error::EntryTooBig { .. }) => {
-                            sleep(Duration::from_millis(10));
+                            sleep(Duration::from_millis(1));
                             continue;
                         }
                         Err(err) => {
@@ -1238,12 +1207,24 @@ mod tests {
                         }
                     }
                 }
-
-                println!("wrote {}", i);
             }
         });
 
-        reader.join().unwrap();
         writer.join().unwrap();
+        reader.join().unwrap();
+    }
+
+    fn test_data(i: usize) -> Vec<u8> {
+        format!("hello world {}", i).into_bytes()
+    }
+
+    fn verify_data(data: Readable<SharedImpl>, i: usize) {
+        let s =
+            unsafe { String::from_utf8_unchecked(data.into_inner().data().as_slice().to_vec()) };
+
+        let split: Vec<_> = s.split(' ').collect();
+        assert_eq!(split[0], "hello");
+        assert_eq!(split[1], "world");
+        assert_eq!(split[2].parse::<usize>().unwrap(), i);
     }
 }
