@@ -242,7 +242,7 @@ mod test {
         node.push(b"hello world").unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut owned = pool.acquire().unwrap();
+        let mut owned = pool.acquire("pop").unwrap();
         let data = node.pop(&mut owned).unwrap();
 
         assert_eq!(data.into_inner().data().as_slice(), b"hello world");
@@ -275,7 +275,7 @@ mod test {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut owned = pool.acquire().unwrap();
+        let mut owned = pool.acquire("pop").unwrap();
 
         assert_matches!(node.pop(&mut owned), Err(Error::EmptyData));
     }
