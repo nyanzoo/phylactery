@@ -410,7 +410,7 @@ mod test {
 
         let pclone = path.clone();
         let _ = std::thread::spawn(move || {
-            let graveyard = Graveyard::new(format!("{}/data", pclone).into(), popper);
+            let graveyard = Graveyard::new(pclone.into(), popper);
             graveyard.bury(1);
         });
 
