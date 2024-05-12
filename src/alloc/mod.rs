@@ -1,7 +1,5 @@
 use std::{
-    io::{Cursor, Read, Write},
-    mem::size_of,
-    rc::Rc,
+    cmp, io::{Cursor, Read, Write}, mem::size_of, rc::Rc
 };
 
 use log::trace;
@@ -275,7 +273,7 @@ where
         {
             return Err(Error::OutOfMemory {
                 total: self.capacity(),
-                used: next_free,
+                used: cmp::min(next_free, self.capacity()),
             });
         }
 

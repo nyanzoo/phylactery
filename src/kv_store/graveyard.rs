@@ -88,12 +88,14 @@ pub struct Graveyard {
 }
 
 impl Graveyard {
-    pub fn new(dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
+    pub fn new(mut dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
         let block_size = usize::try_from(Metadata::struct_size(crate::entry::Version::V1))
             .expect("u32 -> usize")
             + TOMBSTONE_LEN;
 
         trace!("block_size: {}", block_size);
+        dir.push("data");
+        trace!("creating graveyard at {dir:?}");
         Self {
             dir,
             popper,
