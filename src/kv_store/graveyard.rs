@@ -101,7 +101,7 @@ impl Graveyard {
         Self {
             dir,
             popper,
-            pool: PoolImpl::new(block_size, 1024 * 1024),
+            pool: PoolImpl::new(block_size, 1),
         }
     }
 
