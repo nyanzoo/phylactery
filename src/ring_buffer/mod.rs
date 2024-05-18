@@ -233,6 +233,9 @@ where
         write_ptr += metadata.data_size() as u64;
         write_ptr %= self.buffer.capacity();
 
+        // TODO: see if it is better to do flush ranges instead.
+        self.buffer.flush()?;
+
         self.write_ptr.store(write_ptr, Ordering::SeqCst);
         self.entry.store(entry, Ordering::SeqCst);
         self.has_data.store(true, Ordering::SeqCst);

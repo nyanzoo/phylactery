@@ -186,6 +186,7 @@ where
 
         // update the write pointer.
         let len = write_ptr - orig_write_ptr;
+        self.buffer.flush_range(offset as usize, len as usize)?;
         self.write.store(write_ptr, Ordering::Release);
         self.entry.store(entry, Ordering::Release);
         self.has_data.store(true, Ordering::Release);

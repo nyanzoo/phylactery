@@ -4,7 +4,7 @@ use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
 use crate::Error;
 
-use super::Buffer;
+use super::{Buffer, Flushable};
 
 pub struct InMemBuffer(UnsafeCell<Vec<u8>>);
 
@@ -52,14 +52,32 @@ impl Buffer for InMemBuffer {
         Ok(res)
     }
 
-    fn encode_at<'a, T>(&'a self, off: usize, len: usize, data: &T) -> Result<(), Error>
+    fn encode_at<'a, T>(
+        &'a self,
+        off: usize,
+        len: usize,
+        data: &T,
+    ) -> Result<Flushable<'a, Self>, Error>
     where
         T: Encode<Cursor<&'a mut [u8]>>,
     {
+        if len == 0 {
+            return Ok(Flushable::NoFlush);
+        }
+
         let exclusive = unsafe { &mut *self.0.get() };
+        if len > exclusive.len() {
+            return Err(Error::OutOfBounds {
+                offset: off,
+                len,
+                capacity: exclusive.len(),
+            });
+        }
+
         let exclusive = &mut exclusive[off..(off + len)];
         data.encode(&mut Cursor::new(exclusive))?;
-        Ok(())
+
+        Ok(Flushable::new(self, off, len))
     }
 
     fn read_at(&self, buf: &mut [u8], off: usize) -> Result<u64, Error> {
@@ -75,21 +93,29 @@ impl Buffer for InMemBuffer {
         Ok(len as u64)
     }
 
-    fn write_at(&self, buf: &[u8], off: usize) -> Result<u64, Error> {
+    fn write_at<'a>(&'a self, buf: &[u8], off: usize) -> Result<Flushable<'a, Self>, Error> {
         let len = buf.len();
         if len == 0 {
-            return Ok(0);
+            return Ok(Flushable::NoFlush);
         }
 
         let start = off;
         let end = off + len;
         let exclusive = unsafe { &mut *self.0.get() };
         exclusive[start..end].copy_from_slice(&buf[..(end - start)]);
-        Ok(len as u64)
+        Ok(Flushable::new(self, start, len))
     }
 
     fn capacity(&self) -> u64 {
         unsafe { &*self.0.get() }.len() as u64
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn flush_range(&self, _off: usize, _len: usize) -> Result<(), Error> {
+        Ok(())
     }
 }
 
