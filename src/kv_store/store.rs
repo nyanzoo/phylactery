@@ -153,6 +153,7 @@ impl Store {
             .expect("failed to open file");
 
         file.write_all(contents).expect("failed to write file");
+        file.flush().expect("failed to flush file");
     }
 
     pub fn delete(&mut self, key: &BinaryData<SharedImpl>) -> Result<(), Error> {
@@ -343,7 +344,10 @@ impl Store {
 
 #[cfg(test)]
 mod test {
-    use std::{io::Write, path::Path};
+    use std::{
+        io::Write,
+        path::{Path, PathBuf},
+    };
 
     use necronomicon::{binary_data, Pool, PoolImpl};
     use tempfile::TempDir;
@@ -408,6 +412,27 @@ mod test {
         let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key found");
         };
+    }
+
+    #[test]
+    fn transaction_log_test() {
+        let path = PathBuf::from("be1t1.bin");
+
+        let buffer = MmapBuffer::new(path, 1024 * 1024).unwrap();
+        let (_pusher, popper) = ring_buffer(buffer, Version::V1).unwrap();
+        let pool = PoolImpl::new(1024, 1024);
+        loop {
+            let mut owned = pool.acquire("transaction log").unwrap();
+            match popper.pop(&mut owned) {
+                Ok(data) => {
+                    println!("{:?}", data);
+                }
+                Err(e) => {
+                    println!("{:?}", e);
+                    break;
+                }
+            }
+        }
     }
 
     #[test]

@@ -33,9 +33,8 @@ pub fn put_get_delete(c: &mut Criterion) {
     };
 
     let pool = PoolImpl::new(1024, 1024);
-    let mut buffer = pool.acquire().expect("acquire");
 
-    let mut store = Store::new(config, pusher, &mut buffer).expect("KVStore::new failed");
+    let mut store = Store::new(config, pusher).expect("KVStore::new failed");
 
     let pclone = path.clone();
     let _ = std::thread::spawn(move || {
@@ -46,21 +45,17 @@ pub fn put_get_delete(c: &mut Criterion) {
     for i in (1u32..=10).into_iter().map(|i| 2u64.pow(i)) {
         group.bench_with_input(BenchmarkId::new("pgd", i), &i, |b, _i| {
             b.iter(|| {
-                let mut buf = pool.acquire().expect("acquire");
                 let key = binary_data(b"cat");
-                store
-                    .insert(key.clone(), b"yes", &mut buf)
-                    .expect("insert failed");
+                store.insert(key.clone(), b"yes").expect("insert failed");
 
-                let mut buf = pool.acquire().expect("acquire");
+                let mut buf = pool.acquire("get").expect("acquire");
                 let value = store.get(&key, &mut buf).expect("get failed");
                 let Lookup::Found(value) = value else {
                     panic!("value not found");
                 };
 
                 assert_eq!(value.into_inner().data().as_slice(), b"yes");
-                let mut buf = pool.acquire().expect("acquire");
-                store.delete(&key, &mut buf).expect("delete failed");
+                store.delete(&key).expect("delete failed");
             });
         });
     }

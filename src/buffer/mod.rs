@@ -10,6 +10,34 @@ pub use mmap::MmapBuffer;
 
 use crate::Error;
 
+pub enum Flushable<'a, B>
+where
+    B: Buffer + ?Sized,
+{
+    Flush {
+        buffer: &'a B,
+        off: usize,
+        len: usize,
+    },
+    NoFlush,
+}
+
+impl<'a, B> Flushable<'a, B>
+where
+    B: Buffer,
+{
+    pub fn new(buffer: &'a B, off: usize, len: usize) -> Self {
+        Self::Flush { buffer, off, len }
+    }
+
+    pub fn flush(&self) -> Result<(), Error> {
+        match self {
+            Self::NoFlush => Ok(()),
+            Self::Flush { buffer, off, len } => buffer.flush_range(*off, *len),
+        }
+    }
+}
+
 pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// # Description
     /// Given an offset and length, decode a value of type `T`.
@@ -74,7 +102,15 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// # Errors
     /// This function will return an error if the data cannot be encoded into the buffer.
     /// See [`error::Error`] for more details.
-    fn encode_at<'a, T>(&'a self, off: usize, len: usize, data: &T) -> Result<(), Error>
+    ///
+    /// # Returns
+    /// A [`Flushable`], or an error if the encoding failed.
+    fn encode_at<'a, T>(
+        &'a self,
+        off: usize,
+        len: usize,
+        data: &T,
+    ) -> Result<Flushable<'a, Self>, Error>
     where
         T: Encode<Cursor<&'a mut [u8]>>;
 
@@ -103,8 +139,8 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// See [`error::Error`] for more details.
     ///
     /// # Returns
-    /// The number of bytes read, or an error if the read failed.
-    fn write_at(&self, buf: &[u8], off: usize) -> Result<u64, Error>;
+    /// A [`Flushable`], or an error if the read failed.
+    fn write_at<'a>(&'a self, buf: &[u8], off: usize) -> Result<Flushable<'a, Self>, Error>;
 
     /// # Description
     /// Returns the capacity of the queue.
@@ -112,4 +148,28 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// # Return Value
     /// The capacity of the queue.
     fn capacity(&self) -> u64;
+
+    /// # Description
+    /// Flushes the entire buffer to the underlying storage (if any).
+    ///
+    /// # Errors
+    /// See [`error::Error`] for more details.
+    ///
+    /// # Returns
+    /// Nothing, or an error if the flush failed.
+    fn flush(&self) -> Result<(), Error>;
+
+    /// # Description
+    /// Flushes the range of the buffer to the underlying storage (if any).
+    ///
+    /// # Arguments
+    /// * `off` - The offset in the buffer to start flushing from.
+    /// * `len` - The length of the buffer to flush.
+    ///
+    /// # Errors
+    /// See [`error::Error`] for more details.
+    ///
+    /// # Returns
+    /// Nothing, or an error if the flush failed.
+    fn flush_range(&self, off: usize, len: usize) -> Result<(), Error>;
 }
