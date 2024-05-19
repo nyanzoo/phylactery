@@ -242,26 +242,22 @@ mod test {
 }
 
 pub fn create_store_and_graveyar(
-    mut config: Config,
-    path_fn: impl FnOnce(String) -> String,
+    config: Config,
     graveyard_buffer_size: u64,
 ) -> Result<(Store, Graveyard), Error> {
-    let path = path_fn(config.path.clone());
     trace!(
         "creating store at {}, res {:?}",
-        path,
-        std::fs::create_dir_all(&path)?
+        config.path,
+        std::fs::create_dir_all(&config.path)?
     );
 
-    config.path = path.clone();
-
-    let graveyard_path = format!("{}/graveyard.bin", path);
+    let graveyard_path = format!("{}/graveyard.bin", config.path);
     trace!("creating mmap buffer at {}", graveyard_path);
 
     let graveyard_buffer = MmapBuffer::new(graveyard_path, graveyard_buffer_size)?;
     let (pusher, popper) = ring_buffer(graveyard_buffer, config.version)?;
 
-    let graveyard = Graveyard::new(path.into(), popper);
+    let graveyard = Graveyard::new(config.path.clone().into(), popper);
     let store = Store::new(config, pusher)?;
     Ok((store, graveyard))
 }
