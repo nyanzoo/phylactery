@@ -33,7 +33,7 @@ pub fn push_pop(c: &mut Criterion) {
                 _ = pusher.push(&data).expect("failed to push");
                 pusher.flush().expect("failed to flush");
 
-                let mut buf = pool.acquire("pop").expect("acquire");
+                let mut buf = pool.acquire("pop")");
                 let Pop::Popped(result) = popper.pop(&mut buf).expect("failed to pop") else {
                     panic!("failed to pop");
                 };

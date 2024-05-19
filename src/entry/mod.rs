@@ -119,7 +119,7 @@ mod tests {
         assert!(result.is_ok());
 
         let pool = PoolImpl::new(1024, 1);
-        let mut owned = pool.acquire("readable decode").unwrap();
+        let mut owned = pool.acquire("readable decode");
 
         // verify that if deserialized, the data is the same
         let result = Readable::decode_owned(&mut Cursor::new(&mut buf), &mut owned);

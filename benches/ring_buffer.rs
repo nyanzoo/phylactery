@@ -100,7 +100,7 @@ pub fn push_pop(c: &mut Criterion) {
             b.iter(|| {
                 _ = pusher.push(&data).expect("failed to push");
 
-                let mut buf = pool.acquire("pop").expect("acquire");
+                let mut buf = pool.acquire("pop")");
                 let result = popper.pop(&mut buf).expect("failed to pop");
                 assert!(result.verify().is_ok());
                 let result = result.into_inner();
@@ -117,7 +117,7 @@ pub fn push_pop(c: &mut Criterion) {
             b.iter(|| {
                 _ = pusher.push(&data).expect("failed to push");
 
-                let mut buf = pool.acquire("pop").expect("acquire");
+                let mut buf = pool.acquire("pop")");
                 let result = popper.pop(&mut buf).expect("failed to pop");
                 assert!(result.verify().is_ok());
                 let result = result.into_inner();

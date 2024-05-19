@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 
+use log::trace;
 use necronomicon::{Decode, Encode};
 
 pub mod config;
@@ -11,6 +12,10 @@ mod metadata;
 
 mod store;
 pub use store::{Lookup, Store};
+
+use crate::{buffer::MmapBuffer, ring_buffer::ring_buffer, Error};
+
+use self::config::Config;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub(crate) enum MetaState {
@@ -234,4 +239,29 @@ mod test {
             )
             .unwrap();
     }
+}
+
+pub fn create_store_and_graveyar(
+    mut config: Config,
+    path_fn: impl FnOnce(String) -> String,
+    graveyard_buffer_size: u64,
+) -> Result<(Store, Graveyard), Error> {
+    let path = path_fn(config.path.clone());
+    trace!(
+        "creating store at {}, res {:?}",
+        path,
+        std::fs::create_dir_all(&path)?
+    );
+
+    config.path = path.clone();
+
+    let graveyard_path = format!("{}/graveyard.bin", path);
+    trace!("creating mmap buffer at {}", graveyard_path);
+
+    let graveyard_buffer = MmapBuffer::new(graveyard_path, graveyard_buffer_size)?;
+    let (pusher, popper) = ring_buffer(graveyard_buffer, config.version)?;
+
+    let graveyard = Graveyard::new(path.into(), popper);
+    let store = Store::new(config, pusher)?;
+    Ok((store, graveyard))
 }
