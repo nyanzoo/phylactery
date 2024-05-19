@@ -90,7 +90,7 @@ pub struct Graveyard {
 }
 
 impl Graveyard {
-    pub fn new(mut dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
+    pub(crate) fn new(mut dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
         let block_size = usize::try_from(Metadata::struct_size(crate::entry::Version::V1))
             .expect("u32 -> usize")
             + TOMBSTONE_LEN;
@@ -161,10 +161,7 @@ impl Graveyard {
         let mut node = 0;
 
         loop {
-            let mut buf = self
-                .pool
-                .acquire(BufferOwner::Graveyard)
-                .expect("failed to acquire buffer");
+            let mut buf = self.pool.acquire(BufferOwner::Graveyard);
 
             // If we crash and it happens to be that tombstones map to same spot as different data,
             // then we will delete data we should keep. Is this true still?

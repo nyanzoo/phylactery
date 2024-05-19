@@ -79,7 +79,10 @@ pub struct Store {
 
 // The expectation is that this is single threaded.
 impl Store {
-    pub fn new(config: Config, pusher: ring_buffer::Pusher<MmapBuffer>) -> Result<Self, Error> {
+    pub(crate) fn new(
+        config: Config,
+        pusher: ring_buffer::Pusher<MmapBuffer>,
+    ) -> Result<Self, Error> {
         let Config {
             path,
             meta:
@@ -103,9 +106,7 @@ impl Store {
 
         let mut lookup = BTreeMap::new();
         for entry in meta.recovered_entries()? {
-            let mut buffer = meta_pool
-                .acquire(BufferOwner::Init)
-                .expect("failed to acquire buffer");
+            let mut buffer = meta_pool.acquire(BufferOwner::Init);
             let MetadataRead { key, .. } = entry.data_owned(&mut buffer)?;
 
             lookup.insert(key, entry);
@@ -160,10 +161,7 @@ impl Store {
         if let Some(mut entry) = self.lookup.remove(key) {
             // Need to use the push-side of the ring buffer for graveyard.
             // We also need to make sure we set the flag for tombstone.
-            let mut buffer = self
-                .meta_pool
-                .acquire(BufferOwner::Delete)
-                .expect("failed to acquire buffer");
+            let mut buffer = self.meta_pool.acquire(BufferOwner::Delete);
             let mut meta: MetadataRead<_> = entry.data_owned(&mut buffer)?;
 
             match meta.state {
@@ -228,10 +226,7 @@ impl Store {
         buf: &mut OwnedImpl,
     ) -> Result<Lookup<SharedImpl>, Error> {
         if let Some(entry) = self.lookup.get(key) {
-            let mut buffer = self
-                .meta_pool
-                .acquire(BufferOwner::Get)
-                .expect("failed to acquire buffer");
+            let mut buffer = self.meta_pool.acquire(BufferOwner::Get);
             let meta: MetadataRead<_> = entry.data_owned(&mut buffer)?;
 
             let MetadataRead {
@@ -298,10 +293,7 @@ impl Store {
 
         // We need to tombstone old entry if it exists.
         if let Some(entry) = self.lookup.remove(&key) {
-            let mut buffer = self
-                .meta_pool
-                .acquire(BufferOwner::Insert)
-                .expect("failed to acquire buffer");
+            let mut buffer = self.meta_pool.acquire(BufferOwner::Insert);
             let mut meta: MetadataRead<_> = entry.data_owned(&mut buffer)?;
 
             meta.state = MetaState::Compacting;
@@ -377,7 +369,7 @@ mod test {
 
         store.insert(key.clone(), b"cats").expect("insert failed");
 
-        let mut owned = pool.acquire("get").unwrap();
+        let mut owned = pool.acquire("get");
         let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
@@ -398,7 +390,7 @@ mod test {
 
         store.insert(key.clone(), b"cats").expect("insert failed");
 
-        let mut owned = pool.acquire("get").unwrap();
+        let mut owned = pool.acquire("get");
         let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
@@ -408,31 +400,10 @@ mod test {
 
         store.delete(&key).expect("delete failed");
 
-        let mut owned = pool.acquire("get").unwrap();
+        let mut owned = pool.acquire("get");
         let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key found");
         };
-    }
-
-    #[test]
-    fn transaction_log_test() {
-        let path = PathBuf::from("be1t1.bin");
-
-        let buffer = MmapBuffer::new(path, 1024 * 1024).unwrap();
-        let (_pusher, popper) = ring_buffer(buffer, Version::V1).unwrap();
-        let pool = PoolImpl::new(1024, 1024);
-        loop {
-            let mut owned = pool.acquire("transaction log").unwrap();
-            match popper.pop(&mut owned) {
-                Ok(data) => {
-                    println!("{:?}", data);
-                }
-                Err(e) => {
-                    println!("{:?}", e);
-                    break;
-                }
-            }
-        }
     }
 
     #[test]
@@ -454,7 +425,7 @@ mod test {
         store.insert(key.clone(), b"cats").expect("insert failed");
         store.insert(key.clone(), b"dogs").expect("insert failed");
 
-        let mut owned = pool.acquire("get").unwrap();
+        let mut owned = pool.acquire("get");
         let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
@@ -466,7 +437,7 @@ mod test {
         // Wait long enough for graveyard to run
         std::thread::sleep(std::time::Duration::from_secs(5));
         // assert that the data folder is empty
-        let mut owned = pool.acquire("get").unwrap();
+        let mut owned = pool.acquire("get");
         let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };

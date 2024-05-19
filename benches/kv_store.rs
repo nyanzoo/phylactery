@@ -48,7 +48,7 @@ pub fn put_get_delete(c: &mut Criterion) {
                 let key = binary_data(b"cat");
                 store.insert(key.clone(), b"yes").expect("insert failed");
 
-                let mut buf = pool.acquire("get").expect("acquire");
+                let mut buf = pool.acquire("get")");
                 let value = store.get(&key, &mut buf).expect("get failed");
                 let Lookup::Found(value) = value else {
                     panic!("value not found");
