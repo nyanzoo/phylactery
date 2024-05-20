@@ -336,10 +336,7 @@ impl Store {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        io::Write,
-        path::{Path, PathBuf},
-    };
+    use std::{io::Write, path::Path};
 
     use necronomicon::{binary_data, Pool, PoolImpl};
     use tempfile::TempDir;
