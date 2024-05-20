@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use log::trace;
+use log::{error, trace};
 
 use necronomicon::{BinaryData, Encode, Owned, Shared};
 
@@ -304,6 +304,7 @@ where
         let mut read_ptr = self.read_ptr.load(Ordering::SeqCst);
         let write_ptr = self.write_ptr.load(Ordering::SeqCst);
         let has_data = self.has_data.load(Ordering::SeqCst);
+        let metadata_struct_size = Metadata::struct_size(self.version);
         trace!("original read_ptr: {}, write_ptr: {}", read_ptr, write_ptr);
 
         // If the buffer is empty, we can't read.
@@ -312,7 +313,7 @@ where
         }
 
         // handle wrap around case
-        if read_ptr + Metadata::struct_size(self.version) as u64 > self.buffer.capacity() {
+        if read_ptr + metadata_struct_size as u64 > self.buffer.capacity() {
             read_ptr = 0;
         }
 
@@ -321,10 +322,13 @@ where
             read_ptr,
             write_ptr
         );
-        let metadata = self.buffer.decode_at::<Metadata>(
-            read_ptr as usize,
-            Metadata::struct_size(self.version) as usize,
-        )?;
+        let metadata = self
+            .buffer
+            .decode_at::<Metadata>(read_ptr as usize, metadata_struct_size as usize)
+            .map_err(|err| {
+                error!("failed to decode metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {}", self.buffer.capacity(), read_ptr, write_ptr);
+                err
+            })?;
 
         // If the metadata CRC does not match, we can't read.
         metadata.verify()?;
