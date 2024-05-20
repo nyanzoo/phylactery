@@ -1,3 +1,5 @@
+use crate::ring_buffer::Remaining;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("alignment error: {0} is not aligned to {1}")]
@@ -21,14 +23,14 @@ pub enum Error {
     #[error("empty data")]
     EmptyData,
 
-    #[error("entry larger than total buffer: {entry_size} > {capacity}")]
-    EntryLargerThanBuffer { entry_size: u64, capacity: u64 },
-
     #[error("entry larger than node {0} > {1}")]
     EntryLargerThanNode(u64, u64),
 
-    #[error("entry too big {entry_size} > {remaining}")]
-    EntryTooBig { entry_size: u64, remaining: u64 },
+    #[error("entry too big {entry_size} > {remaining:?}")]
+    EntryTooBig {
+        entry_size: u64,
+        remaining: Remaining,
+    },
 
     #[error("file does not exist: {0}")]
     FileDoesNotExist(String),

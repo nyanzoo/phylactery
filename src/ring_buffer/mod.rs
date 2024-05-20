@@ -1,20 +1,26 @@
-use std::{
-    io::Cursor,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
 };
 
 use log::{error, trace};
 
-use necronomicon::{BinaryData, Encode, Owned, Shared};
+use necronomicon::Owned;
 
 use crate::{
     buffer::Buffer,
-    entry::{crc_check, last_metadata, Metadata, Readable, Version, Writable},
+    entry::{last_metadata, Metadata, Readable, Version, Writable},
     Error,
 };
+
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))]
+pub enum Remaining {
+    Left(u64),
+    Right(u64),
+    Both { left: u64, right: u64 },
+    None,
+}
 
 pub struct RingBuffer<B>(Arc<Inner<B>>)
 where
@@ -142,6 +148,7 @@ where
         let mut write_ptr = self.write_ptr.load(Ordering::SeqCst);
         let entry = self.entry.load(Ordering::SeqCst) + 1;
         let has_data = self.has_data.load(Ordering::SeqCst);
+
         trace!(
             "push original read_ptr: {}, write_ptr: {}",
             read_ptr,
@@ -151,61 +158,55 @@ where
         let len = buf.len() as u32;
         let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, len) as u64;
-        let data = Writable::new(self.version, buf);
-        let metadata = Metadata::new(self.version, entry, read_ptr, write_ptr + entry_size, len);
 
-        // If the entry is too big, we can't write.
-        if entry_size > self.buffer.capacity() {
-            return Err(Error::EntryLargerThanBuffer {
+        // if there is data and write_ptr == read_ptr, then the buffer is full.
+        if has_data && write_ptr == read_ptr {
+            return Err(Error::EntryTooBig {
                 entry_size,
-                capacity: self.buffer.capacity(),
+                remaining: self.remaining(has_data, write_ptr, read_ptr),
             });
         }
 
-        // check if metadata can fit without wrapping
-        let mut has_wrapped = false;
-        if write_ptr + Metadata::struct_size(self.version) as u64 > self.buffer.capacity() {
+        let data = Writable::new(self.version, buf);
+        let metadata = Metadata::new(
+            self.version,
+            entry,
+            read_ptr,
+            (write_ptr + entry_size) % self.buffer.capacity(),
+            len,
+        );
+
+        // If the entry is too big, we can't write.
+        if entry_size > self.buffer.capacity() {
+            return Err(Error::EntryTooBig {
+                entry_size,
+                remaining: self.remaining(has_data, write_ptr, read_ptr),
+            });
+        }
+
+        // check if write ptr would pass read ptr.
+        if write_ptr < read_ptr && write_ptr + entry_size > read_ptr {
+            return Err(Error::EntryTooBig {
+                entry_size,
+                remaining: self.remaining(has_data, write_ptr, read_ptr),
+            });
+        }
+
+        // check if entry will fit at right side, otherwise see if fits in left.
+        // if it fits move write ptr to left.
+        if write_ptr + entry_size > self.buffer.capacity() {
+            if entry_size > read_ptr {
+                return Err(Error::EntryTooBig {
+                    entry_size,
+                    remaining: self.remaining(has_data, write_ptr, read_ptr),
+                });
+            }
+
             write_ptr = 0;
-            has_wrapped = true;
         }
 
         // This is the final write pointer location for the data we are writing into buffer.
         let location = write_ptr;
-
-        // If the entry is too big to fit in the remaining buffer, we can't write.
-        if has_wrapped
-            && (write_ptr + metadata.data_size() as u64) % self.buffer.capacity() > read_ptr
-        {
-            let remaining = if write_ptr > read_ptr {
-                self.buffer.capacity() - (write_ptr - read_ptr)
-            } else {
-                read_ptr - write_ptr
-            };
-            return Err(Error::EntryTooBig {
-                entry_size,
-                remaining,
-            });
-        }
-
-        // Also need to check if data would wrap and would be too big
-        let next_write_ptr = write_ptr + entry_size;
-        let pass = write_ptr <= read_ptr && next_write_ptr >= read_ptr;
-
-        let pass_around = write_ptr >= read_ptr
-            && next_write_ptr > self.buffer.capacity()
-            && next_write_ptr % self.buffer.capacity() > read_ptr;
-
-        if has_data && (pass || pass_around) {
-            let remaining = if write_ptr > read_ptr {
-                self.buffer.capacity() - (write_ptr - read_ptr)
-            } else {
-                read_ptr - write_ptr
-            };
-            return Err(Error::EntryTooBig {
-                entry_size,
-                remaining,
-            });
-        }
 
         // write metadata
         self.buffer.encode_at(
@@ -217,18 +218,8 @@ where
         write_ptr += Metadata::struct_size(self.version) as u64;
 
         // write data
-        if write_ptr + metadata.data_size() as u64 > self.buffer.capacity() {
-            let remaining = self.buffer.capacity() - write_ptr;
-            let mut temp = vec![0; metadata.data_size() as usize];
-            data.encode(&mut Cursor::new(&mut temp))?;
-            let (left, right) = temp.split_at(remaining as usize);
-
-            self.buffer.write_at(left, write_ptr as usize)?;
-            self.buffer.write_at(right, 0)?;
-        } else {
-            self.buffer
-                .encode_at(write_ptr as usize, metadata.data_size() as usize, &data)?;
-        }
+        self.buffer
+            .encode_at(write_ptr as usize, metadata.data_size() as usize, &data)?;
 
         write_ptr += metadata.data_size() as u64;
         write_ptr %= self.buffer.capacity();
@@ -322,16 +313,8 @@ where
             read_ptr,
             write_ptr
         );
-        let metadata = self
-            .buffer
-            .decode_at::<Metadata>(read_ptr as usize, metadata_struct_size as usize)
-            .map_err(|err| {
-                error!("failed to decode metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {}", self.buffer.capacity(), read_ptr, write_ptr);
-                err
-            })?;
-
-        // If the metadata CRC does not match, we can't read.
-        metadata.verify()?;
+        let (metadata, mut read_ptr) =
+            self.read_metadata(metadata_struct_size as u64, read_ptr, write_ptr)?;
 
         // If the data buffer is too small to hold the data, we can't read.
         if buf.unfilled_capacity() < metadata.real_data_size() as usize {
@@ -343,75 +326,11 @@ where
 
         read_ptr += Metadata::struct_size(self.version) as u64;
 
-        // handle wrap around case
-        let data = if read_ptr + metadata.data_size() as u64 > self.buffer.capacity() {
-            // Read data in buf anyway, we will manually verify to avoid another copy.
-            let len = metadata.real_data_size() as usize;
-            let skip = metadata.data_encoding_metadata_size();
-            {
-                let unfilled = buf.unfilled();
-                let buf = &mut unfilled[..len];
-                read_ptr += skip as u64;
-                // it is possible that the data encoding metadata from encoding pushes the start
-                // of real data to the beginning of the buffer allowing for a contiguous read.
-                if read_ptr > self.buffer.capacity() {
-                    read_ptr %= self.buffer.capacity();
-                    self.buffer.read_at(buf, read_ptr as usize)?;
-                } else {
-                    // need to split into left and right
-                    let split = if (read_ptr + len as u64) > self.buffer.capacity() {
-                        let right = (read_ptr + len as u64) % self.buffer.capacity();
-                        let left = len as u64 - right;
-                        left as usize
-                    } else {
-                        len
-                    };
-                    self.buffer.read_at(&mut buf[..split], read_ptr as usize)?;
-                    self.buffer.read_at(&mut buf[split..], 0)?;
-                }
-                read_ptr += len as u64;
-            }
-            buf.fill(len);
-            let left = buf.split_at(len).into_shared();
-            let binary_data = BinaryData::new(left);
-
-            // it is also possible that crc is wrapped around
-            let mut crc = [0u8; 4];
-            if read_ptr > self.buffer.capacity() {
-                read_ptr %= self.buffer.capacity();
-                self.buffer.read_at(&mut crc, read_ptr as usize)?;
-            } else {
-                // need to split into left and right
-                let split = if (read_ptr + 4) > self.buffer.capacity() {
-                    let right = (read_ptr + 4) % self.buffer.capacity();
-                    let left = 4 - right;
-                    left as usize
-                } else {
-                    4
-                };
-
-                self.buffer.read_at(&mut crc[..split], read_ptr as usize)?;
-                self.buffer.read_at(&mut crc[split..], 0)?;
-            }
-
-            // TODO(rojang): it seems bincode uses little endian for u32, but we should
-            // make sure this is the case always?
-            let crc = u32::from_be_bytes(crc);
-            crc_check(crc, binary_data.data().as_slice())?;
-
-            read_ptr += 4;
-
-            Readable::new(self.version, binary_data)
-        } else {
-            let data: Readable<O::Shared> = self.buffer.decode_at_owned(
-                read_ptr as usize,
-                metadata.data_size() as usize,
-                buf,
-            )?;
-            data.verify()?;
-            read_ptr += metadata.data_size() as u64;
-            data
-        };
+        let data: Readable<O::Shared> =
+            self.buffer
+                .decode_at_owned(read_ptr as usize, metadata.data_size() as usize, buf)?;
+        data.verify()?;
+        read_ptr += metadata.data_size() as u64;
 
         read_ptr %= self.buffer.capacity();
         if !peek {
@@ -419,6 +338,80 @@ where
             self.has_data.store(read_ptr != write_ptr, Ordering::SeqCst);
         }
         Ok(data)
+    }
+
+    fn remaining(&self, has_data: bool, write_ptr: u64, read_ptr: u64) -> Remaining {
+        let capacity = self.buffer.capacity();
+        if has_data {
+            if write_ptr > read_ptr {
+                if read_ptr == 0 {
+                    Remaining::Right(capacity - write_ptr)
+                } else {
+                    Remaining::Both {
+                        left: read_ptr,
+                        right: capacity - write_ptr,
+                    }
+                }
+            } else if read_ptr == write_ptr {
+                Remaining::None
+            } else if write_ptr == 0 {
+                Remaining::Left(read_ptr)
+            } else {
+                Remaining::Left(read_ptr - write_ptr)
+            }
+        } else {
+            Remaining::Left(capacity)
+        }
+    }
+
+    fn read_metadata(
+        &self,
+        metadata_struct_size: u64,
+        read_ptr: u64,
+        write_ptr: u64,
+    ) -> Result<(Metadata, u64), Error> {
+        let capacity = self.buffer.capacity();
+
+        let metadata = self
+            .buffer
+            .decode_at::<Metadata>(read_ptr as usize, metadata_struct_size as usize);
+        match metadata {
+            Ok(metadata) => {
+                match metadata.verify() {
+                    Ok(_) => Ok((metadata, read_ptr)),
+                    Err(err) => {
+                        trace!("failed to decode metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {} due to {err}", capacity, read_ptr, write_ptr);
+                        let metadata = self
+                            .buffer
+                            .decode_at::<Metadata>(0, metadata_struct_size as usize).map_err(|err| {
+                                error!("failed to decode metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {} due to {err}", capacity, read_ptr, write_ptr);
+                                err
+                            })?;
+                        // If the metadata CRC does not match, we can't read.
+                        metadata.verify().map_err(|err| {
+                            error!("failed to verify metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {} due to {err}", capacity, read_ptr, write_ptr);
+                            err
+                        })?;
+                        Ok((metadata, 0))
+                    }
+                }
+            }
+            Err(err) => {
+                trace!("failed to decode metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {} due to {err}", capacity, read_ptr, write_ptr);
+                let metadata = self
+                    .buffer
+                    .decode_at::<Metadata>(0, metadata_struct_size as usize).map_err(|err| {
+                        error!("failed to decode metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {} due to {err}", capacity, read_ptr, write_ptr);
+                        err
+                    })?;
+                // If the metadata CRC does not match, we can't read.
+                metadata.verify().map_err(|err| {
+                    error!("failed to verify metadata of size {metadata_struct_size} with buf cap {}, read_ptr {}, write_ptr {} due to {err}", capacity, read_ptr, write_ptr);
+                    err
+                })?;
+                Ok((metadata, 0))
+            }
+        }
     }
 }
 
@@ -536,7 +529,7 @@ mod tests {
 
     use std::{
         fs::OpenOptions,
-        io::{Cursor, Read, Seek, SeekFrom, Write},
+        io::{Cursor, Read, Write},
         sync::atomic::Ordering,
         thread::{sleep, spawn},
         time::Duration,
@@ -552,7 +545,7 @@ mod tests {
         Error,
     };
 
-    use super::RingBuffer;
+    use super::{Remaining, RingBuffer};
 
     #[test]
     fn test_init() {
@@ -771,105 +764,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pop_wrap_around_data() {
-        const METADATA_SPOT: u32 = 1024 - Metadata::struct_size(Version::V1);
-        const DATA_SPOT: u32 = METADATA_SPOT + Metadata::struct_size(Version::V1) - 1024;
-
-        let file = tempfile::tempdir().unwrap();
-        let file = file.path().join("test");
-        let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
-        ring_buffer.inner().write_ptr.store(0, Ordering::SeqCst);
-        ring_buffer
-            .inner()
-            .write_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
-        ring_buffer
-            .inner()
-            .read_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
-        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
-
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(file)
-            .expect("open file");
-
-        let data = b"hello world";
-        let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Writable::new(Version::V1, data);
-
-        file.seek(SeekFrom::Start(METADATA_SPOT as u64))
-            .expect("seek to start");
-        meta.encode(&mut file).expect("write metadata");
-
-        file.seek(SeekFrom::Start(DATA_SPOT as u64))
-            .expect("seek to start");
-        data.encode(&mut file).expect("write data");
-
-        let pool = PoolImpl::new(1024, 1024);
-
-        let mut buf = pool.acquire("pop");
-        let data = ring_buffer.pop(&mut buf).unwrap();
-        assert_matches!(data.into_inner().data().as_slice(), b"hello world");
-    }
-
-    #[test]
-    fn test_pop_wrap_around_data_partial() {
-        const METADATA_SPOT: u32 = 1024 - Metadata::struct_size(Version::V1) - 5;
-        const DATA_SPOT1: u32 = METADATA_SPOT + Metadata::struct_size(Version::V1);
-        const DATA_SPOT2: u32 = (DATA_SPOT1 + 5) % 1024;
-
-        let file = tempfile::tempdir().unwrap();
-        let file = file.path().join("test");
-        let buffer = MmapBuffer::new(file.clone(), 1024).expect("buffer");
-        let ring_buffer = RingBuffer::new(buffer, Version::V1).expect("new buffer");
-        ring_buffer.inner().write_ptr.store(0, Ordering::SeqCst);
-        ring_buffer
-            .inner()
-            .write_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
-        ring_buffer
-            .inner()
-            .read_ptr
-            .fetch_add(METADATA_SPOT as u64, Ordering::SeqCst);
-        ring_buffer.inner().has_data.store(true, Ordering::SeqCst);
-
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(file)
-            .expect("open file");
-
-        let data = b"hello world";
-        let meta = Metadata::new(Version::V1, 1, 1, 1, data.len() as u32);
-        let data = Writable::new(Version::V1, data);
-
-        file.seek(SeekFrom::Start(METADATA_SPOT as u64))
-            .expect("seek to start");
-        meta.encode(&mut file).expect("write metadata");
-
-        file.seek(SeekFrom::Start(DATA_SPOT1 as u64))
-            .expect("seek to start");
-        let mut buf = vec![];
-        data.encode(&mut buf).unwrap();
-        file.write_all(&buf[..(1024 - DATA_SPOT1) as usize])
-            .expect("write data");
-
-        file.seek(SeekFrom::Start(DATA_SPOT2 as u64))
-            .expect("seek to start");
-        file.write_all(&buf[(1024 - DATA_SPOT1) as usize..])
-            .expect("write data");
-
-        let pool = PoolImpl::new(1024, 1024);
-
-        let mut buf = pool.acquire("pop");
-        let data = ring_buffer.pop(&mut buf).unwrap();
-        assert_matches!(data.into_inner().data().as_slice(), b"hello world");
-    }
-
-    #[test]
     fn test_pop_wrap_around_metadata() {
         const METADATA_SPOT: u32 = 1024 - (Metadata::struct_size(Version::V1) / 2);
 
@@ -966,7 +860,7 @@ mod tests {
         let data = &[0u8; 1024_usize + 1];
         assert_matches!(
             ring_buffer.push(data),
-            Err(Error::EntryLargerThanBuffer { .. })
+            Err(Error::EntryTooBig { entry_size, remaining }) if entry_size == 1075 && remaining == Remaining::Left(1024)
         );
     }
 
@@ -1111,11 +1005,14 @@ mod tests {
         // read all
         loop {
             let mut buf = pool.acquire("pop");
-            if let Ok(data) = ring_buffer.pop(&mut buf) {
-                reads
-                    .push(String::from_utf8(data.into_inner().data().as_slice().to_vec()).unwrap());
-            } else {
-                break;
+            match ring_buffer.pop(&mut buf) {
+                Ok(data) => {
+                    reads.push(
+                        String::from_utf8(data.into_inner().data().as_slice().to_vec()).unwrap(),
+                    );
+                }
+                Err(Error::BufferEmpty) => break,
+                Err(e) => panic!("unexpected error: {:?}", e),
             }
         }
 
