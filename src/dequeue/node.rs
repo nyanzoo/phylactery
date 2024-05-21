@@ -197,6 +197,20 @@ where
             crc: data.crc(),
         })
     }
+
+    /// # Description
+    /// Returns the current Write pointer.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let write_ptr = node.write_ptr();
+    /// ```
+    ///
+    /// # Returns
+    /// The current write pointer.
+    pub fn write_ptr(&self) -> u64 {
+        self.write.load(Ordering::Acquire)
+    }
 }
 
 #[cfg(test)]

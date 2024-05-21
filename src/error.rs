@@ -1,5 +1,3 @@
-use crate::ring_buffer::Remaining;
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("alignment error: {0} is not aligned to {1}")]
@@ -17,6 +15,9 @@ pub enum Error {
     #[error("data crc mismatch: {expected} != {actual}")]
     DataCrcMismatch { expected: u32, actual: u32 },
 
+    #[error("dequeue full")]
+    DequeueFull,
+
     #[error("out of memory {used}/{total}")]
     OutOfMemory { total: u64, used: u64 },
 
@@ -26,17 +27,17 @@ pub enum Error {
     #[error("entry larger than node {0} > {1}")]
     EntryLargerThanNode(u64, u64),
 
-    #[error("entry too big {entry_size} > {remaining:?}")]
-    EntryTooBig {
-        entry_size: u64,
-        remaining: Remaining,
-    },
-
     #[error("file does not exist: {0}")]
     FileDoesNotExist(String),
 
     #[error("invalid buffer size: {0} must be >= {1} and a multiple of {1}")]
     InvalidBufferSize(u32, u32),
+
+    #[error("trying to initialize dequeue with smaller capacity ({capacity}) than the current one ({current_capacity})")]
+    InvalidDequeueCapacity {
+        capacity: u64,
+        current_capacity: u64,
+    },
 
     #[error("invalid version: {0}")]
     InvalidVersion(u8),

@@ -13,7 +13,7 @@ mod metadata;
 mod store;
 pub use store::{Lookup, Store};
 
-use crate::{buffer::MmapBuffer, ring_buffer::ring_buffer, Error};
+use crate::{dequeue::dequeue, Error};
 
 use self::config::Config;
 
@@ -254,8 +254,7 @@ pub fn create_store_and_graveyar(
     let graveyard_path = format!("{}/graveyard.bin", config.path);
     trace!("creating mmap buffer at {}", graveyard_path);
 
-    let graveyard_buffer = MmapBuffer::new(graveyard_path, graveyard_buffer_size)?;
-    let (pusher, popper) = ring_buffer(graveyard_buffer, config.version)?;
+    let (pusher, popper) = dequeue(graveyard_path, 1024, graveyard_buffer_size, config.version)?;
 
     let graveyard = Graveyard::new(config.path.clone().into(), popper);
     let store = Store::new(config, pusher)?;

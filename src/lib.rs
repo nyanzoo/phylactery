@@ -12,5 +12,3 @@ mod error;
 pub use error::Error;
 
 pub mod kv_store;
-
-pub mod ring_buffer;

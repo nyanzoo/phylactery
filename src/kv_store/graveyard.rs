@@ -9,9 +9,9 @@ use log::{debug, trace};
 use necronomicon::{Decode, Encode, Pool, PoolImpl, Shared};
 
 use crate::{
-    buffer::{InMemBuffer, MmapBuffer},
+    buffer::InMemBuffer,
+    dequeue::{self, Popper},
     entry::Metadata,
-    ring_buffer,
 };
 
 use super::BufferOwner;
@@ -85,12 +85,12 @@ where
 //
 pub struct Graveyard {
     dir: PathBuf,
-    popper: ring_buffer::Popper<MmapBuffer>,
+    popper: Popper,
     pool: PoolImpl,
 }
 
 impl Graveyard {
-    pub(crate) fn new(mut dir: PathBuf, popper: ring_buffer::Popper<MmapBuffer>) -> Self {
+    pub(crate) fn new(mut dir: PathBuf, popper: Popper) -> Self {
         let block_size = usize::try_from(Metadata::struct_size(crate::entry::Version::V1))
             .expect("u32 -> usize")
             + TOMBSTONE_LEN;
@@ -166,25 +166,32 @@ impl Graveyard {
             // If we crash and it happens to be that tombstones map to same spot as different data,
             // then we will delete data we should keep. Is this true still?
             if let Ok(data) = self.popper.pop(&mut buf) {
-                data.verify().expect("failed to verify data");
-                let data = data.into_inner();
-                let tomb = Tombstone::decode(&mut Cursor::new(data.data().as_slice()))
-                    .expect("failed to decode tombstone");
+                match data {
+                    dequeue::Pop::Popped(data) => {
+                        data.verify().expect("failed to verify data");
+                        let data = data.into_inner();
+                        let tomb = Tombstone::decode(&mut Cursor::new(data.data().as_slice()))
+                            .expect("failed to decode tombstone");
 
-                if nodes.is_empty() {
-                    nodes.push(vec![]);
-                }
+                        if nodes.is_empty() {
+                            nodes.push(vec![]);
+                        }
 
-                if nodes[node].is_empty() {
-                    nodes[node].push(tomb);
-                } else {
-                    let last = nodes[node].last().expect("no tombstones in node");
-                    if tomb.file == last.file {
-                        nodes[node].push(tomb);
-                    } else {
-                        node += 1;
-                        nodes.push(vec![]);
-                        nodes[node].push(tomb);
+                        if nodes[node].is_empty() {
+                            nodes[node].push(tomb);
+                        } else {
+                            let last = nodes[node].last().expect("no tombstones in node");
+                            if tomb.file == last.file {
+                                nodes[node].push(tomb);
+                            } else {
+                                node += 1;
+                                nodes.push(vec![]);
+                                nodes[node].push(tomb);
+                            }
+                        }
+                    }
+                    dequeue::Pop::WaitForFlush => {
+                        break;
                     }
                 }
             } else {
