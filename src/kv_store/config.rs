@@ -17,4 +17,5 @@ pub struct Metadata {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Data {
     pub node_size: u64,
+    pub max_disk_usage: u64,
 }

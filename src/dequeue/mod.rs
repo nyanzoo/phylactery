@@ -125,6 +125,8 @@ struct Inner {
     write: AtomicPtr<DequeueNode<InMemBuffer>>,
     backing_generator: BackingDequeueNodeGenerator,
     node_size: u64,
+    max_disk_usage: u64,
+    disk_usage: AtomicU64,
     version: Version,
 }
 
@@ -154,7 +156,12 @@ impl Drop for Inner {
 // pop needs to read from disk and fall back to read from next node if node is empty.
 // this is because we could be writing in mem and not have written to disk yet.
 impl Inner {
-    pub fn new(dir: impl AsRef<str>, node_size: u64, version: Version) -> Result<Self, Error> {
+    pub fn new(
+        dir: impl AsRef<str>,
+        node_size: u64,
+        max_disk_usage: u64,
+        version: Version,
+    ) -> Result<Self, Error> {
         let backing_generator = BackingDequeueNodeGenerator::new(dir)?;
 
         // Need to read first and last file to get the metadata and correct ptrs.
@@ -162,13 +169,30 @@ impl Inner {
         backing_generator.init_write(&mut buffer)?;
 
         let node = DequeueNode::new(buffer, version)?;
+        let last_write_idx = node.write_ptr();
         let node = Box::into_raw(Box::new(node));
+
+        let last_file = backing_generator.write_idx();
+        let current_disk_usage = if last_file == 0 {
+            0
+        } else {
+            (last_file * node_size) - (node_size - last_write_idx)
+        };
+
+        if current_disk_usage > max_disk_usage {
+            return Err(Error::InvalidDequeueCapacity {
+                capacity: max_disk_usage,
+                current_capacity: current_disk_usage,
+            });
+        }
 
         Ok(Self {
             read: AtomicPtr::new(std::ptr::null_mut()),
             write: AtomicPtr::new(node),
             backing_generator,
             node_size,
+            max_disk_usage,
+            disk_usage: AtomicU64::new(current_disk_usage),
             version,
         })
     }
@@ -210,6 +234,8 @@ impl Inner {
                 unsafe { drop(Box::from_raw(read_ptr)) };
                 // put in new node.
                 self.read.store(next_ptr, Ordering::Release);
+                // reclaim disk space.
+                self.disk_usage.fetch_sub(self.node_size, Ordering::Release);
 
                 Ok(Pop::Popped(data))
             }
@@ -218,6 +244,12 @@ impl Inner {
     }
 
     pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
+        // Check if we have room left on disk.
+        let current_disk_usage = self.disk_usage.load(Ordering::Acquire);
+        if current_disk_usage > self.max_disk_usage {
+            return Err(Error::DequeueFull);
+        }
+
         // Should never be null!
         let write_ptr = self.write.load(Ordering::Acquire);
         let write = NonNull::new(write_ptr)
@@ -246,6 +278,9 @@ impl Inner {
                 let node = Box::into_raw(Box::new(node));
 
                 self.write.store(node, Ordering::Release);
+
+                // claim disk space.
+                self.disk_usage.fetch_add(self.node_size, Ordering::Release);
 
                 // allow for `write_ptr` to be dropped if not also pointed to by read half.
                 if write_ptr != self.read.load(Ordering::Acquire) {
@@ -338,8 +373,18 @@ impl Clone for Dequeue {
 }
 
 impl Dequeue {
-    pub fn new(dir: impl AsRef<str>, node_size: u64, version: Version) -> Result<Self, Error> {
-        Ok(Self(Arc::new(Inner::new(dir, node_size, version)?)))
+    pub fn new(
+        dir: impl AsRef<str>,
+        node_size: u64,
+        max_disk_usage: u64,
+        version: Version,
+    ) -> Result<Self, Error> {
+        Ok(Self(Arc::new(Inner::new(
+            dir,
+            node_size,
+            max_disk_usage,
+            version,
+        )?)))
     }
 
     pub fn push(&self, buf: &[u8]) -> Result<Push, Error> {
@@ -404,9 +449,10 @@ impl Popper {
 pub fn dequeue(
     dir: impl AsRef<str>,
     node_size: u64,
+    max_disk_usage: u64,
     version: Version,
 ) -> Result<(Pusher, Popper), Error> {
-    let dequeue = Dequeue::new(dir, node_size, version)?;
+    let dequeue = Dequeue::new(dir, node_size, max_disk_usage, version)?;
 
     let pusher = Pusher::new(dequeue.clone());
     let popper = Popper::new(dequeue);
@@ -433,7 +479,8 @@ mod test {
     #[test]
     fn test_dequeue() {
         let dir = tempfile::tempdir().unwrap();
-        let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
+        let dequeue =
+            Dequeue::new(dir.path().to_str().unwrap(), 1024, 1024 * 1024, Version::V1).unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
         let mut buf = pool.acquire("pop");
@@ -452,7 +499,8 @@ mod test {
     #[test]
     fn test_dequeue_multiple() {
         let dir = tempfile::tempdir().unwrap();
-        let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
+        let dequeue =
+            Dequeue::new(dir.path().to_str().unwrap(), 1024, 1024 * 1024, Version::V1).unwrap();
 
         dequeue.push(b"hello kitties").unwrap();
         dequeue.push(b"hello kitties").unwrap();
@@ -477,7 +525,8 @@ mod test {
     #[test]
     fn test_dequeue_multiple_nodes() {
         let dir = tempfile::tempdir().unwrap();
-        let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
+        let dequeue =
+            Dequeue::new(dir.path().to_str().unwrap(), 1024, 1024 * 1024, Version::V1).unwrap();
 
         for i in 0..100 {
             dequeue
@@ -504,7 +553,7 @@ mod test {
     fn test_dequeue_as_spsc() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_str().unwrap().to_owned();
-        let (tx, rx) = dequeue(path, 1024, Version::V1).unwrap();
+        let (tx, rx) = dequeue(path, 1024, 1024 * 1024, Version::V1).unwrap();
 
         spawn(move || {
             for i in 0..100 {
@@ -530,7 +579,8 @@ mod test {
     #[test]
     fn test_dequeue_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let dequeue = Dequeue::new(dir.path().to_str().unwrap(), 1024, Version::V1).unwrap();
+        let dequeue =
+            Dequeue::new(dir.path().to_str().unwrap(), 1024, 1024 * 1024, Version::V1).unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
         let mut buf = pool.acquire("pop");

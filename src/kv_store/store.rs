@@ -5,9 +5,9 @@ use necronomicon::{BinaryData, Encode, OwnedImpl, Pool, PoolImpl, Shared, Shared
 use crate::{
     alloc::{Entry, FixedSizeAllocator},
     buffer::MmapBuffer,
-    dequeue::{Dequeue, Push},
+    dequeue::{self, Dequeue, Push},
     entry::Readable,
-    ring_buffer, Error,
+    Error,
 };
 
 use super::{
@@ -63,7 +63,7 @@ pub struct Store {
     // data files
     dequeue: Dequeue,
     // graveyard pusher
-    graveyard_pusher: ring_buffer::Pusher<MmapBuffer>,
+    graveyard_pusher: dequeue::Pusher,
 
     // directories for data and meta
     data_path: String,
@@ -79,10 +79,7 @@ pub struct Store {
 
 // The expectation is that this is single threaded.
 impl Store {
-    pub(crate) fn new(
-        config: Config,
-        pusher: ring_buffer::Pusher<MmapBuffer>,
-    ) -> Result<Self, Error> {
+    pub(crate) fn new(config: Config, pusher: dequeue::Pusher) -> Result<Self, Error> {
         let Config {
             path,
             meta:
@@ -90,7 +87,11 @@ impl Store {
                     max_disk_usage,
                     max_key_size,
                 },
-            data: config::Data { node_size },
+            data:
+                config::Data {
+                    node_size,
+                    max_disk_usage: max_data_usage,
+                },
             version,
         } = config;
         let meta_path = format!("{}/meta.bin", path);
@@ -100,7 +101,7 @@ impl Store {
 
         let meta = MmapBuffer::new(meta_path.clone(), max_disk_usage)?;
         let mut meta = FixedSizeAllocator::new(meta, meta_block_size)?;
-        let dequeue = Dequeue::new(data_path.clone(), node_size, version)?;
+        let dequeue = Dequeue::new(data_path.clone(), node_size, max_data_usage, version)?;
 
         let meta_pool = PoolImpl::new(meta_block_size, max_disk_usage as usize / meta_block_size);
 
@@ -180,7 +181,9 @@ impl Store {
 
             let mut buf = vec![];
             Tombstone::from(meta).encode(&mut buf)?;
+
             let _ = self.graveyard_pusher.push(&buf)?;
+            let _ = self.graveyard_pusher.flush()?;
         }
 
         Ok(())
@@ -342,14 +345,13 @@ mod test {
     use tempfile::TempDir;
 
     use crate::{
-        buffer::MmapBuffer,
+        dequeue::{dequeue, Popper},
         entry::Version,
         kv_store::{
             config::{self, Config},
             store::Lookup,
             Graveyard,
         },
-        ring_buffer::{ring_buffer, Popper},
     };
 
     use super::Store;
@@ -450,13 +452,13 @@ mod test {
         assert!(!std::path::Path::exists(&path1));
     }
 
-    fn test_kv_store(temp_dir: &TempDir) -> (Store, Popper<MmapBuffer>) {
+    fn test_kv_store(temp_dir: &TempDir) -> (Store, Popper) {
         let path = format!("{}", temp_dir.path().display());
 
         let mmap_path = format!("{}/graveyard.bin", path);
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
 
-        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
+        let (pusher, popper) =
+            dequeue(mmap_path, 1024, 1024, Version::V1).expect("ring buffer failed");
 
         let store = Store::new(
             Config {
@@ -465,7 +467,10 @@ mod test {
                     max_disk_usage: 1024,
                     max_key_size: 32,
                 },
-                data: config::Data { node_size: 1024 },
+                data: config::Data {
+                    node_size: 1024,
+                    max_disk_usage: 1024 * 1024,
+                },
                 version: Version::V1,
             },
             pusher,
