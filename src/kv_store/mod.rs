@@ -76,15 +76,17 @@ impl necronomicon::BufferOwner for BufferOwner {
     }
 }
 
-pub fn create_store_and_graveyar(
+pub fn create_store_and_graveyard(
     config: Config,
     graveyard_buffer_size: u64,
 ) -> Result<(Store, Graveyard), Error> {
+    log::error!("test1");
     trace!(
         "creating store at {}, res {:?}",
         config.path,
         std::fs::create_dir_all(&config.path)?
     );
+    log::error!("test2");
 
     let graveyard_path = format!("{}/graveyard.bin", config.path);
     trace!("creating mmap buffer at {}", graveyard_path);
