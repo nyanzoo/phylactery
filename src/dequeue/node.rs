@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use necronomicon::Owned;
 
@@ -12,6 +15,7 @@ pub struct DequeueNode<B>
 where
     B: Buffer,
 {
+    file_path: PathBuf,
     buffer: B,
     write: AtomicU64,
     read: AtomicU64,
@@ -50,7 +54,7 @@ impl<B> DequeueNode<B>
 where
     B: Buffer,
 {
-    pub fn new(buffer: B, version: Version) -> Result<Self, Error> {
+    pub fn new(file_path: PathBuf, buffer: B, version: Version) -> Result<Self, Error> {
         let mut read = 0;
         let mut write = 0;
         let mut entry = 0;
@@ -64,6 +68,7 @@ where
         }
 
         Ok(Self {
+            file_path,
             buffer,
             write: AtomicU64::new(write),
             read: AtomicU64::new(read),
@@ -71,6 +76,12 @@ where
             has_data: AtomicBool::new(has_data),
             version,
         })
+    }
+
+    pub fn delete(&self) -> Result<(), Error> {
+        let Self { file_path, .. } = self;
+        _ = std::fs::remove_file(file_path);
+        Ok(())
     }
 
     /// # Description
@@ -222,10 +233,12 @@ mod test {
 
     use super::{super::Error, DequeueNode};
 
+    const NO_FILE: &str = "no_file";
+
     #[test]
     fn test_new_fresh() {
         let buffer = InMemBuffer::new(128);
-        let node = DequeueNode::new(buffer, Version::V1).unwrap();
+        let node = DequeueNode::new(NO_FILE.into(), buffer, Version::V1).unwrap();
 
         assert_eq!(node.read.load(std::sync::atomic::Ordering::Acquire), 0);
         assert_eq!(node.write.load(std::sync::atomic::Ordering::Acquire), 0);
@@ -236,12 +249,12 @@ mod test {
     #[test]
     fn test_new_with_data() {
         let buffer = InMemBuffer::new(128);
-        let node = DequeueNode::new(buffer, Version::V1).unwrap();
+        let node = DequeueNode::new(NO_FILE.into(), buffer, Version::V1).unwrap();
 
         node.push(b"hello world").unwrap();
 
-        let buffer = node.buffer;
-        let node = DequeueNode::new(buffer, Version::V1).unwrap();
+        let buffer = node.buffer.clone();
+        let node = DequeueNode::new(NO_FILE.into(), buffer, Version::V1).unwrap();
 
         assert_eq!(node.read.load(std::sync::atomic::Ordering::Acquire), 0);
         assert_eq!(node.write.load(std::sync::atomic::Ordering::Acquire), 61);
@@ -252,7 +265,7 @@ mod test {
     #[test]
     fn test_push_pop() {
         let buffer = InMemBuffer::new(128);
-        let node = DequeueNode::new(buffer, Version::V1).unwrap();
+        let node = DequeueNode::new(NO_FILE.into(), buffer, Version::V1).unwrap();
 
         node.push(b"hello world").unwrap();
 
@@ -266,7 +279,7 @@ mod test {
     #[test]
     fn test_push_node_full() {
         let buffer = InMemBuffer::new(64);
-        let node = DequeueNode::new(buffer, Version::V1).unwrap();
+        let node = DequeueNode::new(NO_FILE.into(), buffer, Version::V1).unwrap();
 
         node.push(b"hello world").unwrap();
         assert_matches!(node.push(b"hello world"), Err(Error::NodeFull));
@@ -275,7 +288,7 @@ mod test {
     #[test]
     fn test_push_entry_too_large() {
         let buffer = InMemBuffer::new(128);
-        let node = DequeueNode::new(buffer, Version::V1).unwrap();
+        let node = DequeueNode::new(NO_FILE.into(), buffer, Version::V1).unwrap();
 
         assert_matches!(
             node.push(&[0u8; 129]),
@@ -286,7 +299,7 @@ mod test {
     #[test]
     fn test_pop_empty_data() {
         let buffer = InMemBuffer::new(128);
-        let node = DequeueNode::new(buffer, Version::V1).unwrap();
+        let node = DequeueNode::new(NO_FILE.into(), buffer, Version::V1).unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
 

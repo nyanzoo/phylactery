@@ -24,6 +24,7 @@ mod node;
 
 pub(crate) struct File {
     file: std::fs::File,
+    path: String,
     index: u64,
 }
 
@@ -35,13 +36,15 @@ pub struct BackingDequeueNodeGenerator {
 
 impl BackingDequeueNodeGenerator {
     pub fn new(dir: impl AsRef<str>) -> Result<Self, Error> {
-        let last = {
+        let (first, last) = {
             let dir = Path::new(dir.as_ref());
             if !dir.exists() {
                 create_dir_all(dir)?;
             }
 
-            if let Some(entry) = dir.read_dir()?.last() {
+            let mut read_dir = dir.read_dir()?;
+
+            let first = if let Some(entry) = read_dir.nth(0) {
                 entry?
                     .file_name()
                     .to_str()
@@ -53,11 +56,27 @@ impl BackingDequeueNodeGenerator {
                     .expect("valid file name")
             } else {
                 0
-            }
+            };
+
+            let last = if let Some(entry) = read_dir.last() {
+                entry?
+                    .file_name()
+                    .to_str()
+                    .expect("valid file name string")
+                    .split_once('.')
+                    .expect("remove .bin")
+                    .0
+                    .parse::<u64>()
+                    .expect("valid file name")
+            } else {
+                0
+            };
+
+            (first, last)
         };
 
         Ok(Self {
-            read_index: AtomicU64::new(0),
+            read_index: AtomicU64::new(first),
             write_index: AtomicU64::new(last),
             dir: dir.as_ref().to_string(),
         })
@@ -72,10 +91,22 @@ impl BackingDequeueNodeGenerator {
 
             self.read_index.store(index + 1, Ordering::Release);
 
-            Ok(File { file, index })
+            Ok(File {
+                file,
+                path: paths,
+                index,
+            })
         } else {
             Err(Error::FileDoesNotExist(paths))
         }
+    }
+
+    pub fn dir(&self) -> &str {
+        &self.dir
+    }
+
+    pub fn read_idx(&self) -> u64 {
+        self.read_index.load(Ordering::Acquire)
     }
 
     pub fn write_idx(&self) -> u64 {
@@ -85,9 +116,12 @@ impl BackingDequeueNodeGenerator {
     pub(crate) fn next_write(&self) -> Result<File, Error> {
         let index = self.write_index.fetch_add(1, Ordering::AcqRel);
         let path = format!("{}/{}.bin", self.dir, index);
-        let file = OpenOptions::new().append(true).create(true).open(path)?;
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path.clone())?;
 
-        Ok(File { file, index })
+        Ok(File { file, path, index })
     }
 
     pub fn init_write(&self, buffer: &mut InMemBuffer) -> Result<(), Error> {
@@ -168,7 +202,13 @@ impl Inner {
         let mut buffer = InMemBuffer::new(node_size);
         backing_generator.init_write(&mut buffer)?;
 
-        let node = DequeueNode::new(buffer, version)?;
+        let file_path = format!(
+            "{}/{}.bin",
+            backing_generator.dir(),
+            backing_generator.read_idx()
+        );
+
+        let node = DequeueNode::new(file_path.into(), buffer, version)?;
         let last_write_idx = node.write_ptr();
         let node = Box::into_raw(Box::new(node));
 
@@ -225,12 +265,14 @@ impl Inner {
                     Err(e) => return Err(e),
                 };
 
-                let read = NonNull::new(next_ptr).expect("valid ptr");
-                let read = unsafe { read.as_ref() };
-
-                let data = read.pop(buf)?;
+                let data = {
+                    let read = NonNull::new(next_ptr).expect("valid ptr");
+                    let read = unsafe { read.as_ref() };
+                    read.pop(buf)?
+                };
 
                 // drop old node.
+                read.delete()?;
                 unsafe { drop(Box::from_raw(read_ptr)) };
                 // put in new node.
                 self.read.store(next_ptr, Ordering::Release);
@@ -266,12 +308,14 @@ impl Inner {
             Err(Error::NodeFull) => {
                 let File {
                     file: mut next,
+                    path,
                     index,
                 } = self.backing_generator.next_write()?;
                 next.write_all((*write).as_ref())?;
                 next.flush()?;
 
-                let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
+                let node =
+                    DequeueNode::new(path.into(), InMemBuffer::new(self.node_size), self.version)?;
 
                 let node::Push { offset, len, crc } = node.push(buf)?;
 
@@ -307,13 +351,16 @@ impl Inner {
 
         let File {
             file: mut next,
+            path,
             index: _,
         } = self.backing_generator.next_write()?;
         next.write_all((*write).as_ref())?;
-        next.flush()?;
+        next.sync_data()?;
 
-        let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
+        let node = DequeueNode::new(path.into(), InMemBuffer::new(self.node_size), self.version)?;
         let node = Box::into_raw(Box::new(node));
+        // reclaim memory.
+        drop(unsafe { Box::from_raw(write_ptr) });
 
         self.write.store(node, Ordering::Release);
 
@@ -351,12 +398,13 @@ impl Inner {
         // We have to try to read from disk.
         let File {
             file: mut next,
+            path,
             index: _,
         } = self.backing_generator.next_read()?;
         let mut buffer = InMemBuffer::new(self.node_size);
 
         _ = next.read(buffer.as_mut())?;
-        let node = DequeueNode::new(buffer, self.version)?;
+        let node = DequeueNode::new(path.into(), buffer, self.version)?;
 
         Ok(Box::into_raw(Box::new(node)))
     }
