@@ -91,9 +91,13 @@ pub fn create_store_and_graveyard(
     let graveyard_path = format!("{}/graveyard.bin", config.path);
     trace!("creating mmap buffer at {}", graveyard_path);
 
+    log::error!("test3");
     let (pusher, popper) = dequeue(graveyard_path, 1024, graveyard_buffer_size, config.version)?;
 
+    log::error!("test4");
     let graveyard = Graveyard::new(config.path.clone().into(), popper);
+    log::error!("test5");
     let store = Store::new(config, pusher)?;
+    log::error!("test6");
     Ok((store, graveyard))
 }
