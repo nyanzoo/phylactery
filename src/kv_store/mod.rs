@@ -88,7 +88,7 @@ pub fn create_store_and_graveyard(
     );
     log::error!("test2");
 
-    let graveyard_path = format!("{}/graveyard.bin", config.path);
+    let graveyard_path = format!("{}/graveyard", config.path);
     trace!("creating mmap buffer at {}", graveyard_path);
 
     log::error!("test3");
