@@ -183,7 +183,7 @@ impl Store {
             Tombstone::from(meta).encode(&mut buf)?;
 
             let _ = self.graveyard_pusher.push(&buf)?;
-            let _ = self.graveyard_pusher.flush()?;
+            self.graveyard_pusher.flush()?;
         }
 
         Ok(())
