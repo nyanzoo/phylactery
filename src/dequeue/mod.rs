@@ -355,7 +355,7 @@ impl Inner {
             index: _,
         } = self.backing_generator.next_write()?;
         next.write_all((*write).as_ref())?;
-        next.flush()?;
+        next.sync_data()?;
 
         let node = DequeueNode::new(path.into(), InMemBuffer::new(self.node_size), self.version)?;
         let node = Box::into_raw(Box::new(node));
