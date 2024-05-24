@@ -314,6 +314,8 @@ impl Inner {
 
         let node = DequeueNode::new(InMemBuffer::new(self.node_size), self.version)?;
         let node = Box::into_raw(Box::new(node));
+        // reclaim memory.
+        drop(unsafe { Box::from_raw(write_ptr) });
 
         self.write.store(node, Ordering::Release);
 
