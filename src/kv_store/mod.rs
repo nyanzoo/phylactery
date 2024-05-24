@@ -241,7 +241,7 @@ mod test {
     }
 }
 
-pub fn create_store_and_graveyar(
+pub fn create_store_and_graveyard(
     config: Config,
     graveyard_buffer_size: u64,
 ) -> Result<(Store, Graveyard), Error> {
@@ -251,12 +251,12 @@ pub fn create_store_and_graveyar(
         std::fs::create_dir_all(&config.path)?
     );
 
-    let graveyard_path = format!("{}/graveyard.bin", config.path);
+    let graveyard_path = format!("{}/graveyard", config.path);
     trace!("creating mmap buffer at {}", graveyard_path);
 
     let (pusher, popper) = dequeue(graveyard_path, 1024, graveyard_buffer_size, config.version)?;
-
     let graveyard = Graveyard::new(config.path.clone().into(), popper);
     let store = Store::new(config, pusher)?;
+
     Ok((store, graveyard))
 }
