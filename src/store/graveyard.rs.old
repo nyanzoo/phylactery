@@ -16,59 +16,6 @@ use crate::{
 
 use super::BufferOwner;
 
-pub const TOMBSTONE_LEN: usize = size_of::<Tombstone>();
-
-#[derive(Debug)]
-#[repr(C, packed)]
-pub(crate) struct Tombstone {
-    pub crc: u32,
-    pub file: u64,
-    pub offset: u64,
-    pub len: u64,
-}
-
-impl<W> Encode<W> for Tombstone
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        let crc: u32 = unsafe { std::ptr::addr_of!(self.crc).read_unaligned() };
-        crc.encode(writer)?;
-
-        let file: u64 = unsafe { std::ptr::addr_of!(self.file).read_unaligned() };
-        file.encode(writer)?;
-
-        let offset: u64 = unsafe { std::ptr::addr_of!(self.offset).read_unaligned() };
-        offset.encode(writer)?;
-
-        let len: u64 = unsafe { std::ptr::addr_of!(self.len).read_unaligned() };
-        len.encode(writer)?;
-
-        Ok(())
-    }
-}
-
-impl<R> Decode<R> for Tombstone
-where
-    R: Read,
-{
-    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
-    where
-        Self: Sized,
-    {
-        let crc = u32::decode(reader)?;
-        let file = u64::decode(reader)?;
-        let offset = u64::decode(reader)?;
-        let len = u64::decode(reader)?;
-        Ok(Self {
-            crc,
-            file,
-            offset,
-            len,
-        })
-    }
-}
-
 // Only compacts the data files, we just write over the meta file.
 // Several things to look out for:
 // - crash during compaction of files and moving into new file(s)
@@ -113,7 +60,7 @@ impl Graveyard {
         loop {
             // Collect all the files to compact.
             let tombs = self.collect();
-            debug!(
+            println!(
                 "compacting {} tomb(s)",
                 tombs.iter().map(|x| x.len()).sum::<usize>()
             );
@@ -133,7 +80,9 @@ impl Graveyard {
                     file.read_exact(in_buf.as_mut())
                         .expect("failed to read file");
 
+                    println!("in_buf: {:?}", in_buf.as_ref().bytes());
                     let out_buf = Self::compact_buf(tomb, in_buf);
+                    println!("out_buf: {:?}", out_buf);
 
                     let mut has_data = !out_buf.is_empty();
                     has_data &= out_buf.iter().copied().map(u64::from).sum::<u64>() != 0;
@@ -204,17 +153,50 @@ impl Graveyard {
 
     // We can maybe fix the problem of accidentally deleting data we don't want by
     // comparing crcs of the data and tombstones.
-    fn compact_buf(tombs: Vec<Tombstone>, in_buf: InMemBuffer) -> Vec<u8> {
-        let mut out_buf = vec![];
-        let mut begin = 0;
-
-        for tomb in tombs {
-            let end = tomb.offset as usize;
-            out_buf.extend_from_slice(&in_buf.as_ref()[begin..end]);
-            begin = (tomb.offset + tomb.len) as usize;
+    fn compact_buf(mut tombs: Vec<Tombstone>, in_buf: InMemBuffer) -> Vec<u8> {
+        if tombs.is_empty() {
+            return in_buf.as_ref().to_vec();
         }
 
-        out_buf.extend_from_slice(&in_buf.as_ref()[begin..]);
+        println!("tombs: {:?}", tombs);
+        let first = tombs.first().expect("no tombstones");
+
+        assert!(tombs.iter().all(|x| x.file == first.file));
+
+        let mut out_buf = vec![];
+
+        // compact the tombstones first
+        tombs.sort_by(|a, b| a.offset.cmp(&b.offset));
+
+        let mut reduced_tombs = vec![];
+        for tomb in tombs {
+            if reduced_tombs.is_empty() {
+                reduced_tombs.push(tomb);
+            } else {
+                let last = reduced_tombs.last().expect("no tombstones");
+                if last.offset + last.len == tomb.offset {
+                    reduced_tombs.last_mut().expect("no tombstones").len += tomb.len;
+                } else if last.offset == tomb.offset {
+                    // skip
+                } else {
+                    reduced_tombs.push(tomb);
+                }
+            }
+        }
+
+        let first = reduced_tombs.first().expect("no tombstones");
+
+        // copy the data from beginning to first tombstone
+        out_buf.extend_from_slice(&in_buf.as_ref()[0..first.offset as usize]);
+        println!("reduced tombs: {:?}", reduced_tombs);
+
+        let mut begin = first.offset + first.len;
+        for tomb in reduced_tombs.iter().skip(1) {
+            out_buf.extend_from_slice(&in_buf.as_ref()[begin as usize..tomb.offset as usize]);
+            begin = tomb.offset + tomb.len;
+        }
+
+        out_buf.extend_from_slice(&in_buf.as_ref()[begin as usize..]);
 
         out_buf
     }

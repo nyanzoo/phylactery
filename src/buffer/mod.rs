@@ -1,6 +1,14 @@
-use std::io::Cursor;
+use std::{fmt::Debug, io::Cursor};
+
+use log::error;
 
 use necronomicon::{Decode, DecodeOwned, Encode, Owned};
+
+mod error;
+pub use error::Error;
+
+mod file;
+pub use file::FileBuffer;
 
 mod mem;
 pub use mem::InMemBuffer;
@@ -8,37 +16,79 @@ pub use mem::InMemBuffer;
 mod mmap;
 pub use mmap::MmapBuffer;
 
-use crate::Error;
+pub trait Flushable {
+    fn flush(&self) -> Result<(), Error>;
+}
 
-pub enum Flushable<'a, B>
+pub struct FlushOp<'a, B>(&'a mut B)
+where
+    B: Buffer + ?Sized;
+
+impl<'a, B> FlushOp<'a, B>
 where
     B: Buffer + ?Sized,
 {
-    Flush {
-        buffer: &'a B,
-        off: usize,
-        len: usize,
-    },
-    NoFlush,
+    /// # Description
+    /// Flushes the entire buffer to the underlying storage (if any).
+    /// Resets the dirty flag.
+    ///
+    /// # Errors
+    /// Returns an error if could not be flushed.
+    /// See [`error::Error`] for more details.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the buffer was flushed successfully.
+    fn flush(&mut self) -> Result<(), Error> {
+        self.0.flush()
+    }
 }
 
-impl<'a, B> Flushable<'a, B>
+pub enum Flush<'a, B>
 where
-    B: Buffer,
+    B: Buffer + ?Sized,
 {
-    pub fn new(buffer: &'a B, off: usize, len: usize) -> Self {
-        Self::Flush { buffer, off, len }
-    }
+    Flush(FlushOp<'a, B>),
+    NoOp,
+}
 
-    pub fn flush(&self) -> Result<(), Error> {
+impl<'a, B> Flush<'a, B>
+where
+    B: Buffer + ?Sized,
+{
+    pub fn flush(&mut self) -> Result<(), Error> {
         match self {
-            Self::NoFlush => Ok(()),
-            Self::Flush { buffer, off, len } => buffer.flush_range(*off, *len),
+            Flush::Flush(f) => f.flush(),
+            Flush::NoOp => Ok(()),
         }
     }
 }
 
-pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
+impl<'a, B> Debug for Flush<'a, B>
+where
+    B: Buffer + ?Sized,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Flush::Flush(_) => write!(f, "Flush"),
+            Flush::NoOp => write!(f, "NoOp"),
+        }
+    }
+}
+
+impl<'a, B> Drop for Flush<'a, B>
+where
+    B: Buffer + ?Sized,
+{
+    fn drop(&mut self) {
+        if let Flush::Flush(f) = self {
+            if let Err(e) = f.flush() {
+                error!("Error flushing buffer: {:?}", e);
+            }
+        }
+    }
+}
+
+pub trait Buffer {
     /// # Description
     /// Given an offset and length, decode a value of type `T`.
     ///
@@ -94,6 +144,8 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// of the `self` buffer. It will do this by calling `Encode::encode` on the given
     /// `data` with the given `self` buffer.
     ///
+    /// Sets the dirty flag.
+    ///
     /// # Arguments
     /// * `off` - The offset in the buffer at which to encode the data.
     /// * `len` - The length of the buffer into which to encode the data.
@@ -106,11 +158,11 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     /// # Returns
     /// A [`Flushable`], or an error if the encoding failed.
     fn encode_at<'a, T>(
-        &'a self,
+        &'a mut self,
         off: usize,
         len: usize,
         data: &T,
-    ) -> Result<Flushable<'a, Self>, Error>
+    ) -> Result<Flush<'a, Self>, Error>
     where
         T: Encode<Cursor<&'a mut [u8]>>;
 
@@ -130,6 +182,7 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
 
     /// # Description
     /// Write into the buffer at the given offset with `buf`
+    /// Set the dirty flag.
     ///
     /// # Arguments
     /// * `buf` - The buffer to read from.
@@ -140,7 +193,7 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
     ///
     /// # Returns
     /// A [`Flushable`], or an error if the read failed.
-    fn write_at<'a>(&'a self, buf: &[u8], off: usize) -> Result<Flushable<'a, Self>, Error>;
+    fn write_at<'a>(&'a mut self, buf: &[u8], off: usize) -> Result<Flush<'a, Self>, Error>;
 
     /// # Description
     /// Returns the capacity of the queue.
@@ -151,25 +204,20 @@ pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
 
     /// # Description
     /// Flushes the entire buffer to the underlying storage (if any).
+    /// Resets the dirty flag.
     ///
     /// # Errors
+    /// Returns an error if could not be flushed.
     /// See [`error::Error`] for more details.
     ///
     /// # Returns
-    /// Nothing, or an error if the flush failed.
-    fn flush(&self) -> Result<(), Error>;
+    /// Returns `Ok(())` if the buffer was flushed successfully.
+    fn flush(&mut self) -> Result<(), Error>;
 
     /// # Description
-    /// Flushes the range of the buffer to the underlying storage (if any).
-    ///
-    /// # Arguments
-    /// * `off` - The offset in the buffer to start flushing from.
-    /// * `len` - The length of the buffer to flush.
-    ///
-    /// # Errors
-    /// See [`error::Error`] for more details.
+    /// Whether the buffer is dirty or not.
     ///
     /// # Returns
-    /// Nothing, or an error if the flush failed.
-    fn flush_range(&self, off: usize, len: usize) -> Result<(), Error>;
+    /// True if the buffer is dirty, false otherwise.
+    fn is_dirty(&self) -> bool;
 }

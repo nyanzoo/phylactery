@@ -17,6 +17,7 @@ pub fn push_pop(c: &mut Criterion) {
     let dequeue = Dequeue::new(
         path,
         u64::try_from(MAX_DATA_SIZE).expect("usize -> u64"),
+        u64::try_from(MAX_DATA_SIZE).expect("usize -> u64") * 1024 * 1024,
         Version::V1,
     )
     .expect("failed to create dequeue");
@@ -33,7 +34,7 @@ pub fn push_pop(c: &mut Criterion) {
                 _ = pusher.push(&data).expect("failed to push");
                 pusher.flush().expect("failed to flush");
 
-                let mut buf = pool.acquire("pop")");
+                let mut buf = pool.acquire("pop");
                 let Pop::Popped(result) = popper.pop(&mut buf).expect("failed to pop") else {
                     panic!("failed to pop");
                 };

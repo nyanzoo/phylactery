@@ -15,17 +15,11 @@ pub enum Error {
     #[error("data crc mismatch: {expected} != {actual}")]
     DataCrcMismatch { expected: u32, actual: u32 },
 
-    #[error("dequeue full")]
-    DequeueFull,
-
     #[error("out of memory {used}/{total}")]
     OutOfMemory { total: u64, used: u64 },
 
     #[error("empty data")]
     EmptyData,
-
-    #[error("entry larger than node {0} > {1}")]
-    EntryLargerThanNode(u64, u64),
 
     #[error("file does not exist: {0}")]
     FileDoesNotExist(String),

@@ -4,11 +4,12 @@ use memmap2::MmapMut;
 
 use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
-use crate::Error;
+use super::{Buffer, Error, Flush, FlushOp};
 
-use super::{Buffer, Flushable};
-
-pub struct MmapBuffer(UnsafeCell<MmapMut>);
+pub struct MmapBuffer {
+    inner: UnsafeCell<MmapMut>,
+    dirty: bool,
+}
 
 impl MmapBuffer {
     pub fn new<P>(path: P, size: u64) -> std::io::Result<Self>
@@ -25,7 +26,10 @@ impl MmapBuffer {
         file.set_len(size)?;
         let mmap = unsafe { MmapMut::map_mut(&file) }?;
 
-        Ok(Self(UnsafeCell::new(mmap)))
+        Ok(Self {
+            inner: UnsafeCell::new(mmap),
+            dirty: false,
+        })
     }
 }
 
@@ -34,7 +38,7 @@ impl Buffer for MmapBuffer {
     where
         T: Decode<Cursor<&'a [u8]>>,
     {
-        let shared = unsafe { &mut *self.0.get() };
+        let shared = unsafe { &mut *self.inner.get() };
         let shared = &mut shared[off..(off + len)];
         let res = T::decode(&mut Cursor::new(shared))?;
         Ok(res)
@@ -50,26 +54,26 @@ impl Buffer for MmapBuffer {
         O: Owned,
         T: DecodeOwned<Cursor<&'a [u8]>, O>,
     {
-        let shared = unsafe { &mut *self.0.get() };
+        let shared = unsafe { &mut *self.inner.get() };
         let shared = &mut shared[off..(off + len)];
         let res = T::decode_owned(&mut Cursor::new(shared), buffer)?;
         Ok(res)
     }
 
     fn encode_at<'a, T>(
-        &'a self,
+        &'a mut self,
         off: usize,
         len: usize,
         data: &T,
-    ) -> Result<Flushable<'a, Self>, Error>
+    ) -> Result<Flush<'a, Self>, Error>
     where
         T: Encode<Cursor<&'a mut [u8]>>,
     {
         if len == 0 {
-            return Ok(Flushable::NoFlush);
+            return Ok(Flush::NoOp);
         }
 
-        let exclusive = unsafe { &mut *self.0.get() };
+        let exclusive = unsafe { &mut *self.inner.get() };
         if len > exclusive.len() {
             return Err(Error::OutOfBounds {
                 offset: off,
@@ -80,8 +84,9 @@ impl Buffer for MmapBuffer {
 
         let exclusive = &mut exclusive[off..(off + len)];
         data.encode(&mut Cursor::new(exclusive))?;
+        self.dirty = true;
 
-        Ok(Flushable::new(self, off, len))
+        Ok(Flush::Flush(FlushOp(self)))
     }
 
     fn read_at(&self, buf: &mut [u8], off: usize) -> Result<u64, Error> {
@@ -92,47 +97,44 @@ impl Buffer for MmapBuffer {
 
         let start = off;
         let end = off + len;
-        let shared = unsafe { &*self.0.get() };
+        let shared = unsafe { &*self.inner.get() };
         buf[..(end - start)].copy_from_slice(&shared[start..end]);
         Ok(len as u64)
     }
 
-    fn write_at<'a>(&'a self, buf: &[u8], off: usize) -> Result<Flushable<'a, Self>, Error> {
+    fn write_at<'a>(&'a mut self, buf: &[u8], off: usize) -> Result<Flush<'a, Self>, Error> {
         let len = buf.len();
         if len == 0 {
-            return Ok(Flushable::NoFlush);
+            return Ok(Flush::NoOp);
         }
 
         let start = off;
         let end = off + len;
-        let exclusive = unsafe { &mut *self.0.get() };
+        let exclusive = unsafe { &mut *self.inner.get() };
         exclusive[start..end].copy_from_slice(&buf[..(end - start)]);
-        Ok(Flushable::new(self, off, len))
+        self.dirty = true;
+        Ok(Flush::Flush(FlushOp(self)))
     }
 
     fn capacity(&self) -> u64 {
-        unsafe { &*self.0.get() }.len() as u64
+        unsafe { &*self.inner.get() }.len() as u64
     }
 
-    fn flush(&self) -> Result<(), Error> {
-        unsafe { &*self.0.get() }.flush()?;
+    fn flush(&mut self) -> Result<(), Error> {
+        if self.dirty {
+            unsafe { &*self.inner.get() }.flush()?;
+            self.dirty = false;
+        }
         Ok(())
     }
 
-    fn flush_range(&self, off: usize, len: usize) -> Result<(), Error> {
-        unsafe { &*self.0.get() }.flush_range(off, len)?;
-        Ok(())
+    fn is_dirty(&self) -> bool {
+        todo!()
     }
 }
 
 impl AsRef<[u8]> for MmapBuffer {
     fn as_ref(&self) -> &[u8] {
-        unsafe { &*self.0.get() }
-    }
-}
-
-impl AsMut<[u8]> for MmapBuffer {
-    fn as_mut(&mut self) -> &mut [u8] {
-        unsafe { &mut *self.0.get() }
+        &unsafe { &*self.inner.get() } as &_
     }
 }

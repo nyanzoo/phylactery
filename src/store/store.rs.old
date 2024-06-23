@@ -5,14 +5,13 @@ use necronomicon::{BinaryData, Encode, OwnedImpl, Pool, PoolImpl, Shared, Shared
 use crate::{
     alloc::{Entry, FixedSizeAllocator},
     buffer::MmapBuffer,
-    dequeue::{self, Dequeue, Push},
+    deque::{self, Deque},
     entry::Readable,
     Error,
 };
 
 use super::{
     config::{self, Config},
-    graveyard::Tombstone,
     metadata::{metadata_block_size, MetadataRead, MetadataWrite},
     BufferOwner, MetaState,
 };
@@ -249,6 +248,7 @@ impl Store {
                 }
             }
 
+            println!("file: {}, offset: {}", file, offset);
             let data = self.dequeue.get(file, offset, buf)?;
 
             data.verify()?;
@@ -305,6 +305,7 @@ impl Store {
             let mut buf = vec![];
             Tombstone::from(meta).encode(&mut buf)?;
             self.graveyard_pusher.push(&buf)?;
+            self.graveyard_pusher.flush()?;
         }
 
         // Maybe we should have meta also be a ring buffer?
@@ -422,12 +423,16 @@ mod test {
 
         let key = binary_data(b"pets");
         store.insert(key.clone(), b"cats").expect("insert failed");
+        tree(&Path::new(&path));
+        hexyl(format!("{}/data/0.bin", path).as_ref());
         store.insert(key.clone(), b"dogs").expect("insert failed");
+        hexyl(format!("{}/data/0.bin", path).as_ref());
 
         let mut owned = pool.acquire("get");
         let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
             panic!("key not found");
         };
+        tree(&Path::new(&path));
 
         let actual = data.into_inner();
         assert_eq!(actual, binary_data(b"dogs"));
@@ -442,8 +447,8 @@ mod test {
         };
 
         // For debugging:
-        // tree(&Path::new(&path));
-        // hexyl(format!("{}/meta.bin", path).as_ref());
+        tree(&Path::new(&path));
+        hexyl(format!("{}/data/0.bin", path).as_ref());
 
         let path = format!("{}/data", path);
         let path0 = Path::new(&path).join("0.bin");
@@ -468,7 +473,7 @@ mod test {
                     max_key_size: 32,
                 },
                 data: config::Data {
-                    node_size: 1024,
+                    node_size: 256,
                     max_disk_usage: 1024 * 1024,
                 },
                 version: Version::V1,

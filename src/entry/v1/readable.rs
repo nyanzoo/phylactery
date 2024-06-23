@@ -2,9 +2,7 @@ use std::{io::Read, mem::size_of};
 
 use necronomicon::{BinaryData, Decode, DecodeOwned, Owned, Shared};
 
-use crate::Error;
-
-use super::generate_crc;
+use super::{generate_crc, Error};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Readable<S>

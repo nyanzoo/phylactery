@@ -1,25 +1,42 @@
-use std::{cell::UnsafeCell, io::Cursor};
+use std::{
+    cell::UnsafeCell,
+    io::{Cursor, Read, Write},
+    path::PathBuf,
+};
 
 use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
-use super::{Buffer, Error, Flush, FlushOp};
+use super::{Buffer, Error, Flush, Flushable};
 
-pub struct InMemBuffer {
+// TODO: need to read file on create and then can just write to file on flush
+pub struct FileBuffer {
     inner: UnsafeCell<Vec<u8>>,
     dirty: bool,
+    file: PathBuf,
 }
 
-impl InMemBuffer {
+impl FileBuffer {
     #[must_use]
-    pub fn new(size: u64) -> Self {
-        Self {
-            inner: UnsafeCell::new(vec![0; size as usize]),
-            dirty: false,
+    pub fn new(size: u64, file: PathBuf) -> std::io::Result<Self> {
+        let mut buffer = vec![0; size as usize];
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&file)?;
+            file.read_exact(&mut buffer)?;
         }
+
+        Ok(Self {
+            inner: UnsafeCell::new(buffer),
+            dirty: false,
+            file,
+        })
     }
 }
 
-impl Buffer for InMemBuffer {
+impl Buffer for FileBuffer {
     fn decode_at<'a, T>(&'a self, off: usize, len: usize) -> Result<T, Error>
     where
         T: Decode<Cursor<&'a [u8]>>,
@@ -99,7 +116,6 @@ impl Buffer for InMemBuffer {
         let exclusive = unsafe { &mut *self.inner.get() };
         exclusive[start..end].copy_from_slice(&buf[..(end - start)]);
         self.dirty = true;
-
         Ok(Flush::Flush(FlushOp(self)))
     }
 
@@ -108,6 +124,13 @@ impl Buffer for InMemBuffer {
     }
 
     fn flush(&mut self) -> Result<(), Error> {
+        {
+            let exclusive = unsafe { &mut *self.inner.get() };
+
+            let mut file = std::fs::OpenOptions::new().write(true).open(&self.file)?;
+            file.write_all(&exclusive)?;
+            file.flush()?;
+        }
         self.dirty = false;
         Ok(())
     }

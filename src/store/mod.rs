@@ -3,17 +3,16 @@ use std::io::{Read, Write};
 use log::trace;
 use necronomicon::{Decode, Encode};
 
+mod cache;
 pub mod config;
 
 mod graveyard;
-pub use graveyard::Graveyard;
 
+mod data;
+mod meta;
 mod metadata;
 
-mod store;
-pub use store::{Lookup, Store};
-
-use crate::{dequeue::dequeue, Error};
+use crate::Error;
 
 use self::config::Config;
 
@@ -23,6 +22,25 @@ pub(crate) enum MetaState {
     Compacting,
     // Has live data associated with it
     Full,
+}
+
+impl From<MetaState> for u8 {
+    fn from(state: MetaState) -> Self {
+        match state {
+            MetaState::Compacting => 0,
+            MetaState::Full => 1,
+        }
+    }
+}
+
+impl From<u8> for MetaState {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0 => MetaState::Compacting,
+            1 => MetaState::Full,
+            _ => panic!("invalid meta state"),
+        }
+    }
 }
 
 impl<W> Encode<W> for MetaState
@@ -241,22 +259,22 @@ mod test {
     }
 }
 
-pub fn create_store_and_graveyard(
-    config: Config,
-    graveyard_buffer_size: u64,
-) -> Result<(Store, Graveyard), Error> {
-    trace!(
-        "creating store at {}, res {:?}",
-        config.path,
-        std::fs::create_dir_all(&config.path)?
-    );
+// pub fn create_store_and_graveyard(
+//     config: Config,
+//     graveyard_buffer_size: u64,
+// ) -> Result<(Store, Graveyard), Error> {
+//     trace!(
+//         "creating store at {}, res {:?}",
+//         config.path,
+//         std::fs::create_dir_all(&config.path)?
+//     );
 
-    let graveyard_path = format!("{}/graveyard", config.path);
-    trace!("creating mmap buffer at {}", graveyard_path);
+//     let graveyard_path = format!("{}/graveyard", config.path);
+//     trace!("creating mmap buffer at {}", graveyard_path);
 
-    let (pusher, popper) = dequeue(graveyard_path, 1024, graveyard_buffer_size, config.version)?;
-    let graveyard = Graveyard::new(config.path.clone().into(), popper);
-    let store = Store::new(config, pusher)?;
+//     let (pusher, popper) = dequeue(graveyard_path, 1024, graveyard_buffer_size, config.version)?;
+//     let graveyard = Graveyard::new(config.path.clone().into(), popper);
+//     let store = Store::new(config, pusher)?;
 
-    Ok((store, graveyard))
-}
+//     Ok((store, graveyard))
+// }
