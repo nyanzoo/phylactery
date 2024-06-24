@@ -6,7 +6,7 @@ use std::{
 
 use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
-use super::{Buffer, Error, Flush, Flushable};
+use super::{Buffer, Error, Flush, FlushOp, Flushable};
 
 // TODO: need to read file on create and then can just write to file on flush
 pub struct FileBuffer {

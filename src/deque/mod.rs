@@ -27,7 +27,7 @@ use self::file::{Entry, File, Pop, Push};
 mod node;
 
 pub struct Deque {
-    deque: VecDeque<(DequeNode, Rc<RefCell<Option<File>>>)>,
+    deque: VecDeque<(DequeNode, Option<File>)>,
     /// The location of the node we are writing to.
     location: Location,
     dir: String,
@@ -73,7 +73,7 @@ impl Deque {
                 .expect("valid index");
             location = Location::new(dir.clone(), index);
             let node = DequeNode::new(&location, node_size, version);
-            deque.push_back((node, Rc::new(RefCell::new(None))));
+            deque.push_back((node, None));
         }
 
         let current_disk_usage = node_size * deque.len() as u64;
@@ -96,113 +96,50 @@ impl Deque {
         })
     }
 
-    pub fn peek<P, O>(
-        &self,
-        pool: P,
-        owner: O,
-    ) -> impl Iterator<Item = Result<file::Entry<<P::Buffer as Owned>::Shared>, Error>>
-    where
-        P: Pool,
-        O: BufferOwner,
-    {
-        self.deque.iter().flat_map(|(node, open)| {
-            if let Some(open) = open {
-                open.peek(pool, owner)
-            } else {
-                node.open().map(|open| open.peek(pool, owner))
-            }
-        })
+    pub fn peek(&self) -> impl Iterator<Item = &(DequeNode, Option<File>)> {
+        self.deque.iter()
     }
 
-    pub fn pop<O>(&mut self, buf: &mut O) -> Result<Pop<O::Shared>, Error>
-    where
-        O: Owned,
-    {
-        loop {
-            if self.deque.is_empty() {
-                return Ok(Pop::WaitForFlush);
-            }
-
-            // What can happen now is that we keep the file open for read and write (flush)
-            // but file buffer will allocate memory, so we need to make sure we don't OOM.
-            // so think on this!
-            let (node, open_rc) = self.deque.pop_front().expect("valid node");
-            let open = open_rc.clone();
-            let mut open = open.borrow_mut();
-            if open.is_none() {
-                open.replace(node.open()?);
-            }
-            let open = open.as_mut().expect("valid file");
-            match open.pop(buf)? {
-                Pop::Entry(entry) => {
-                    // reclaim disk space.
-                    self.disk_usage -= entry.size as u64;
-                    self.deque.push_front((node, open_rc));
-                    return Ok(Pop::Entry(entry));
-                }
-                Pop::WaitForFlush => {}
-            }
-        }
-    }
-
-    pub fn push(&mut self, buf: &[u8]) -> Result<Push<'_>, Error> {
-        // Check if we have room left on disk.
-        let current_disk_usage = self.disk_usage;
-        if current_disk_usage > self.max_disk_usage {
-            return Err(Error::DequeFull {
-                max: self.max_disk_usage,
-                current: current_disk_usage,
-            });
-        }
-
+    pub fn back_mut(&mut self) -> Result<Option<(&mut DequeNode, &mut File)>, Error> {
         if self.deque.is_empty() {
-            let node = DequeNode::new(&self.location, self.node_size, self.version);
-            self.deque.push_back((node, Rc::default()));
+            return Ok(None);
         }
-
-        let (node, open_rc) = self.deque.pop_back().expect("valid node");
-        let open = open_rc.clone();
-        let mut open = open.borrow_mut();
-        if open.is_none() {
-            open.replace(node.open()?);
-        }
-        let open = open.as_mut().expect("valid file");
-        let push = open.push(buf)?;
-
-        match push {
-            Push::Entry {
-                file,
-                offset,
-                len,
-                crc,
-                flush,
-            } => {
-                self.disk_usage += len;
-                self.deque.push_back((node, open_rc));
-                Ok(Push::Entry {
-                    file,
-                    offset,
-                    len,
-                    crc,
-                    flush,
-                })
+        if let Some((node, file)) = self.deque.back_mut() {
+            if file.is_none() {
+                file.replace(node.open()?);
             }
-            Push::Full => {
-                self.location.move_forward();
-                let node = DequeNode::new(&self.location, self.node_size, self.version);
-                let open = node.open()?;
-                self.deque
-                    .push_back((node, Rc::new(RefCell::new(Some(open)))));
-                let push = {
-                    let push = open.push(buf)?;
-                    if let Push::Entry { len, .. } = push {
-                        self.disk_usage += len;
-                    }
-                    push
-                };
-                Ok(push)
-            }
+            Ok(Some((node, file.as_mut().expect("file"))))
+        } else {
+            Ok(None)
         }
+    }
+
+    pub fn front_mut(&mut self) -> Result<(&mut DequeNode, &mut File), Error> {
+        if self.deque.is_empty() {
+            self.deque.push_back((
+                DequeNode::new(&self.location, self.node_size, self.version),
+                None,
+            ));
+        }
+        let (node, file) = self.deque.front_mut().expect("empty");
+        if file.is_none() {
+            file.replace(node.open()?);
+        }
+        Ok((node, file.as_mut().expect("file")))
+    }
+
+    pub fn pop_front(&mut self) -> Result<(), Error> {
+        if self.deque.is_empty() {
+            return Ok(());
+        }
+        let (node, _) = self.deque.pop_front().expect("valid node");
+        node.delete()?;
+        Ok(())
+    }
+
+    pub fn push_back(&mut self) {
+        let node = DequeNode::new(&self.location, self.node_size, self.version);
+        self.deque.push_back((node, None));
     }
 
     pub(crate) fn get<O>(
@@ -241,7 +178,10 @@ mod test {
 
     use necronomicon::{Pool, PoolImpl, Shared};
 
-    use crate::entry::Version;
+    use crate::{
+        deque::file::{Entry, Push},
+        entry::Version,
+    };
 
     use super::{Deque, Pop};
 
@@ -258,16 +198,32 @@ mod test {
 
         let pool = PoolImpl::new(1024, 1024);
         let mut buf = pool.acquire("pop");
-        let push = deque.push(b"hello kitties").unwrap();
-        assert_matches!(deque.pop(&mut buf), Ok(Pop::WaitForFlush));
-        push.flush().unwrap();
-        let res = deque.pop(&mut buf);
-        assert_matches!(res, Ok(Pop::Popped(_)));
 
-        let Pop::Popped(data) = res.unwrap() else {
-            panic!("expected Pop::Popped");
-        };
-        assert_eq!(&data.into_inner().data().as_slice(), b"hello kitties");
+        {
+            let mut flushes = vec![];
+            deque.push_back();
+            let (_, open) = deque.back_mut().expect("valid node").expect("empty");
+            for _ in 0..10 {
+                let Push::Entry { flush, .. } = open.push(b"hello kitties").unwrap() else {
+                    panic!("expected Push::Entry");
+                };
+                flushes.push(flush);
+            }
+
+            for mut flush in flushes.drain(..) {
+                flush.flush().unwrap();
+            }
+        }
+
+        for _ in 0..10 {
+            let (_, open) = deque.back_mut().expect("valid node").expect("empty");
+            let pop = open.pop(&mut buf).expect("valid pop");
+            let Pop::Entry(Entry { data, .. }) = pop else {
+                panic!("expected Pop::Popped");
+            };
+
+            assert_eq!(&data.into_inner().data().as_slice(), b"hello kitties");
+        }
     }
 
     #[test]
@@ -280,7 +236,7 @@ mod test {
             Version::V1,
         )
         .unwrap();
-
+        let node = DequeNode::new(&deque.location, deque.node_size, deque.version);
         deque.push(b"hello kitties").unwrap();
         let push = deque.push(b"hello kitties").unwrap();
         push.flush().unwrap();
