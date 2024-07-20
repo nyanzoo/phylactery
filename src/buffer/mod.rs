@@ -1,4 +1,10 @@
-use std::{fmt::Debug, io::Cursor};
+use std::{
+    cell::{RefCell, UnsafeCell},
+    fmt::Debug,
+    io::{self, ErrorKind, Read, Write},
+    ops::Range,
+    rc::Rc,
+};
 
 use log::error;
 
@@ -17,16 +23,30 @@ mod mmap;
 pub use mmap::MmapBuffer;
 
 pub trait Flushable {
+    /// # Description
+    /// Flushes the entire buffer to the underlying storage (if any).
+    /// Resets the dirty flag.
+    ///
+    /// # Errors
+    /// Returns an error if could not be flushed.
+    /// See [`error::Error`] for more details.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the buffer was flushed successfully.
     fn flush(&self) -> Result<(), Error>;
 }
 
-pub struct FlushOp<'a, B>(&'a mut B)
+pub enum Flush<F>
 where
-    B: Buffer + ?Sized;
+    F: Flushable,
+{
+    Flush(F),
+    NoOp,
+}
 
-impl<'a, B> FlushOp<'a, B>
+impl<F> Flush<F>
 where
-    B: Buffer + ?Sized,
+    F: Flushable,
 {
     /// # Description
     /// Flushes the entire buffer to the underlying storage (if any).
@@ -38,24 +58,7 @@ where
     ///
     /// # Returns
     /// Returns `Ok(())` if the buffer was flushed successfully.
-    fn flush(&mut self) -> Result<(), Error> {
-        self.0.flush()
-    }
-}
-
-pub enum Flush<'a, B>
-where
-    B: Buffer + ?Sized,
-{
-    Flush(FlushOp<'a, B>),
-    NoOp,
-}
-
-impl<'a, B> Flush<'a, B>
-where
-    B: Buffer + ?Sized,
-{
-    pub fn flush(&mut self) -> Result<(), Error> {
+    pub fn flush(&self) -> Result<(), Error> {
         match self {
             Flush::Flush(f) => f.flush(),
             Flush::NoOp => Ok(()),
@@ -63,9 +66,9 @@ where
     }
 }
 
-impl<'a, B> Debug for Flush<'a, B>
+impl<F> Debug for Flush<F>
 where
-    B: Buffer + ?Sized,
+    F: Flushable,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -75,9 +78,9 @@ where
     }
 }
 
-impl<'a, B> Drop for Flush<'a, B>
+impl<F> Drop for Flush<F>
 where
-    B: Buffer + ?Sized,
+    F: Flushable,
 {
     fn drop(&mut self) {
         if let Flush::Flush(f) = self {
@@ -89,6 +92,9 @@ where
 }
 
 pub trait Buffer {
+    type Flushable: Flushable;
+    type Inner: AsRef<[u8]> + AsMut<[u8]>;
+
     /// # Description
     /// Given an offset and length, decode a value of type `T`.
     ///
@@ -106,9 +112,9 @@ pub trait Buffer {
     ///
     /// # Returns
     /// The decoded value of type `T`.
-    fn decode_at<'a, T>(&'a self, off: usize, len: usize) -> Result<T, Error>
+    fn decode_at<T>(&self, off: usize, len: usize) -> Result<T, Error>
     where
-        T: Decode<Cursor<&'a [u8]>>;
+        T: Decode<Reader<Self::Inner>>;
 
     /// # Description
     /// Given an offset and length, decode a value of type `T` and use owned buffer to manage the memory of T.
@@ -127,15 +133,10 @@ pub trait Buffer {
     ///
     /// # Returns
     /// The decoded value of type `T`.
-    fn decode_at_owned<'a, T, O>(
-        &'a self,
-        off: usize,
-        len: usize,
-        buffer: &mut O,
-    ) -> Result<T, Error>
+    fn decode_at_owned<T, O>(&self, off: usize, len: usize, buffer: &mut O) -> Result<T, Error>
     where
         O: Owned,
-        T: DecodeOwned<Cursor<&'a [u8]>, O>;
+        T: DecodeOwned<Reader<Self::Inner>, O>;
 
     /// # Description
     /// Encodes the given `data` at the given `off`set and `len`gth.
@@ -157,14 +158,14 @@ pub trait Buffer {
     ///
     /// # Returns
     /// A [`Flushable`], or an error if the encoding failed.
-    fn encode_at<'a, T>(
-        &'a mut self,
+    fn encode_at<T>(
+        &self,
         off: usize,
         len: usize,
         data: &T,
-    ) -> Result<Flush<'a, Self>, Error>
+    ) -> Result<Flush<Self::Flushable>, Error>
     where
-        T: Encode<Cursor<&'a mut [u8]>>;
+        T: Encode<Writer<Self::Inner>>;
 
     /// # Description
     /// Read from the buffer at the given offset into the `buf`
@@ -193,7 +194,7 @@ pub trait Buffer {
     ///
     /// # Returns
     /// A [`Flushable`], or an error if the read failed.
-    fn write_at<'a>(&'a mut self, buf: &[u8], off: usize) -> Result<Flush<'a, Self>, Error>;
+    fn write_at(&self, buf: &[u8], off: usize) -> Result<Flush<Self::Flushable>, Error>;
 
     /// # Description
     /// Returns the capacity of the queue.
@@ -203,21 +204,192 @@ pub trait Buffer {
     fn capacity(&self) -> u64;
 
     /// # Description
-    /// Flushes the entire buffer to the underlying storage (if any).
-    /// Resets the dirty flag.
-    ///
-    /// # Errors
-    /// Returns an error if could not be flushed.
-    /// See [`error::Error`] for more details.
-    ///
-    /// # Returns
-    /// Returns `Ok(())` if the buffer was flushed successfully.
-    fn flush(&mut self) -> Result<(), Error>;
-
-    /// # Description
     /// Whether the buffer is dirty or not.
     ///
     /// # Returns
     /// True if the buffer is dirty, false otherwise.
     fn is_dirty(&self) -> bool;
+
+    /// # Description
+    /// Compacts the buffer.
+    ///
+    /// # Arguments
+    /// * `ranges` - The ranges to compact.
+    ///
+    /// # Errors
+    /// See [`error::Error`] for more details.
+    ///
+    /// # Returns
+    /// A [`Flushable`], or an error if the compaction failed.
+    fn compact(&self, ranges: &[Range<usize>]) -> Result<Flush<Self::Flushable>, Error>;
+}
+
+struct Inner<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    inner: UnsafeCell<T>,
+    dirty: bool,
+}
+
+impl<T> Inner<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    fn new(inner: T) -> Self {
+        Inner {
+            inner: UnsafeCell::new(inner),
+            dirty: false,
+        }
+    }
+}
+
+impl<T> AsRef<[u8]> for Inner<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    fn as_ref(&self) -> &[u8] {
+        unsafe { &*self.inner.get() }.as_ref()
+    }
+}
+
+impl<T> AsMut<[u8]> for Inner<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    fn as_mut(&mut self) -> &mut [u8] {
+        unsafe { &mut *self.inner.get() }.as_mut()
+    }
+}
+
+pub struct Reader<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    seek: usize,
+    off: usize,
+    len: usize,
+    inner: Rc<RefCell<Inner<T>>>,
+}
+
+impl<T> Reader<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    fn new(inner: Rc<RefCell<Inner<T>>>, off: usize, len: usize) -> Self {
+        Reader {
+            seek: 0,
+            off,
+            len,
+            inner,
+        }
+    }
+}
+
+impl<T> Read for Reader<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.len() == 0 {
+            return Ok(0);
+        }
+
+        let inner = self.inner.borrow();
+        let shared = inner.as_ref();
+        let shared = &shared[self.off..(self.off + self.len)];
+        let len = buf.len().min(shared.len() - self.seek);
+        let start = self.seek;
+        let end = self.seek + len;
+        if start == end {
+            return Err(ErrorKind::UnexpectedEof.into());
+        }
+        buf[..len].copy_from_slice(&shared[start..end]);
+        self.seek += len;
+        Ok(len)
+    }
+}
+
+pub struct Writer<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    seek: usize,
+    off: usize,
+    len: usize,
+    inner: Rc<RefCell<Inner<T>>>,
+}
+
+impl<T> Writer<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    fn new(inner: Rc<RefCell<Inner<T>>>, off: usize, len: usize) -> Self {
+        Writer {
+            seek: 0,
+            off,
+            len,
+            inner,
+        }
+    }
+}
+
+impl<T> Write for Writer<T>
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() == 0 {
+            return Ok(0);
+        }
+
+        let mut inner = self.inner.borrow_mut();
+        let len = {
+            let exclusive = inner.as_mut();
+            let exclusive = &mut exclusive[self.off..(self.off + self.len)];
+            let len = buf.len().min(exclusive.len() - self.seek);
+            let start = self.seek;
+            let end = self.seek + len;
+            if start == end {
+                return Err(ErrorKind::UnexpectedEof.into());
+            }
+            exclusive[start..end].copy_from_slice(&buf[..len]);
+            self.seek += len;
+            len
+        };
+        inner.dirty = true;
+        Ok(len)
+    }
+
+    // Ignore because we use `Flush` to flush the buffer.
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn inverse_ranges(ranges: &[Range<usize>], len: usize) -> Vec<Range<usize>> {
+    let mut inverse = Vec::new();
+    let mut start = 0;
+    for range in ranges {
+        if range.start > start {
+            inverse.push(start..range.start);
+        }
+        start = range.end;
+    }
+    if start < len {
+        inverse.push(start..len);
+    }
+    inverse
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_inverse_ranges() {
+        use super::inverse_ranges;
+        let ranges = vec![0..1, 3..4, 6..7];
+        let len = 10;
+        let inverse = inverse_ranges(&ranges, len);
+        assert_eq!(inverse, vec![1..3, 4..6, 7..10]);
+    }
 }

@@ -7,7 +7,7 @@ use necronomicon::{Decode, Encode};
 
 pub const TOMBSTONE_LEN: usize = size_of::<u32>() + size_of::<u64>() * 3;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Tombstone {
     pub crc: u32,
     pub file: u64,

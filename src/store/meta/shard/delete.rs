@@ -1,7 +1,7 @@
 use necronomicon::{BinaryData, Pool as _, PoolImpl, SharedImpl};
 
 use crate::{
-    buffer::{Buffer as _, Flush, MmapBuffer},
+    buffer::{Buffer, Flush, MmapBuffer},
     calculate_hash,
     store::{
         meta::{
@@ -14,13 +14,21 @@ use crate::{
     u64_to_usize,
 };
 
-pub(crate) struct Delete<'a> {
+pub(crate) struct Delete {
     lookup: Lookup,
     metadata: Metadata,
-    flush: Flush<'a, MmapBuffer>,
+    flush: Flush<<MmapBuffer as Buffer>::Flushable>,
 }
 
-impl<'a> Delete<'a> {
+impl Delete {
+    pub(crate) fn lookup(&self) -> Lookup {
+        self.lookup
+    }
+
+    pub(crate) fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
     // TODO: would be better to probably just call flush on the file directly.
     pub(crate) fn commit(&mut self) -> Result<(), Error> {
         self.flush.flush()?;
@@ -36,8 +44,10 @@ impl Shard {
     ) -> Result<Option<Delete>, Error> {
         let hash = calculate_hash(&key);
         let lookups = self.entries.get(&hash);
-        if let Some(lookups) = lookups {
-            for lookup in lookups {
+        let res = if let Some(lookups) = lookups {
+            let mut res = None;
+            let mut remove = None;
+            for (i, lookup) in lookups.iter().enumerate() {
                 let meta: Metadata = self
                     .buffer
                     .decode_at(u64_to_usize(lookup.offset), Metadata::size())?;
@@ -67,17 +77,28 @@ impl Shard {
                         self.buffer
                             .encode_at(state_offset, 1, &MetaState::Compacting)?;
 
-                    return Ok(Some(Delete {
+                    res = Some(Delete {
                         lookup: Lookup {
                             file: self.shard,
                             offset: lookup.offset,
                         },
                         metadata: meta,
                         flush: flushable,
-                    }));
+                    });
+                    remove = Some(i);
                 }
+
+                if let Some(remove) = remove {
+                    self.entries.get_mut(&hash).unwrap().remove(remove);
+                }
+
+                break;
             }
-        }
-        Ok(None)
+            res
+        } else {
+            None
+        };
+
+        Ok(res)
     }
 }

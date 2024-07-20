@@ -8,7 +8,14 @@ use crate::{
     },
 };
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Get(Lookup);
+
+impl From<Get> for Lookup {
+    fn from(get: Get) -> Self {
+        get.0
+    }
+}
 
 impl Shard {
     pub(crate) fn get(
@@ -17,6 +24,8 @@ impl Shard {
         pool: &PoolImpl,
     ) -> Result<Option<Get>, Error> {
         let hash = calculate_hash(&key);
+        println!("entries: {:?}", self.entries);
+        println!("hash {hash}");
         let lookups = self.entries.get(&hash);
         if let Some(lookups) = lookups {
             for lookup in lookups {

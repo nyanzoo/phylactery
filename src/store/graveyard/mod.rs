@@ -1,2 +1,2 @@
 pub(crate) mod graveyard;
-mod tombstone;
+pub(crate) mod tombstone;

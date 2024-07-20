@@ -1,14 +1,20 @@
-use std::fmt::{self, Debug, Formatter};
+use std::{
+    fmt::{self, Debug, Formatter},
+    ops::Range,
+};
 
 use necronomicon::{BufferOwner, Owned, Pool, Shared};
 
 use crate::{
-    buffer::{Buffer as _, FileBuffer, Flush},
+    buffer::{Buffer, FileBuffer},
     entry::{Metadata, Readable, Version, Writable},
 };
 
 use super::{Error, Location};
 
+pub(super) type Flush = crate::buffer::Flush<<FileBuffer as Buffer>::Flushable>;
+
+#[derive(Debug, Eq, PartialEq)]
 pub struct Remaining {
     pub space_to_write: u64,
     pub space_to_read: u64,
@@ -52,7 +58,7 @@ where
         let entry = read_entry(self.buffer, self.read, self.version, &mut buf);
 
         if let Ok(Entry { size, .. }) = entry {
-            self.read = size;
+            self.read += size;
         }
 
         Some(entry)
@@ -69,13 +75,13 @@ where
 }
 
 #[derive(Debug)]
-pub enum Push<'a> {
+pub enum Push {
     Entry {
         file: u64,
         offset: u64,
         len: u64,
         crc: u32,
-        flush: Flush<'a, FileBuffer>,
+        flush: Flush,
     },
     Full,
 }
@@ -125,7 +131,7 @@ impl File {
 
         let entry = read_entry(&self.buffer, self.read, self.version, buf)?;
 
-        self.read = entry.size;
+        self.read += entry.size;
 
         Ok(Pop::Entry(entry))
     }
@@ -140,7 +146,6 @@ impl File {
         let entry_size = Metadata::struct_size(self.version) as u64
             + Metadata::calculate_data_size(self.version, data_size) as u64;
         let metadata = Metadata::new(self.version, read_ptr, write_ptr + entry_size, data_size);
-
         let capacity = self.buffer.capacity();
 
         // If the entry is too big, we can't write.
@@ -154,7 +159,6 @@ impl File {
 
         // We need the original ptr for returning where the data is stored.
         let offset = write_ptr;
-
         // write the metadata.
         // ignore the flush result, we'll handle it later with the data flush.
         _ = self.buffer.encode_at(
@@ -164,14 +168,12 @@ impl File {
         )?;
 
         write_ptr += Metadata::struct_size(self.version) as u64;
-
         // write the data.
         let flush =
             self.buffer
                 .encode_at(write_ptr as usize, metadata.data_size() as usize, &data)?;
 
         write_ptr += Metadata::calculate_data_size(self.version, data_size) as u64;
-
         // update the write pointer.
         let len = write_ptr - orig_write_ptr;
         self.write = write_ptr as usize;
@@ -183,6 +185,10 @@ impl File {
             crc: data.crc(),
             flush,
         })
+    }
+
+    pub(crate) fn compact(&mut self, ranges_to_delete: &[Range<usize>]) -> Result<Flush, Error> {
+        self.buffer.compact(ranges_to_delete).map_err(Error::Buffer)
     }
 
     pub(crate) fn location(&self) -> &Location {
@@ -219,4 +225,200 @@ where
         data,
         size: metadata_len + data_len,
     })
+}
+
+#[cfg(test)]
+mod test {
+    use std::rc::Rc;
+
+    use necronomicon::{Pool, PoolImpl};
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[derive(Copy, Clone, Debug)]
+    struct TestBufferOwner;
+
+    impl BufferOwner for TestBufferOwner {
+        fn why(&self) -> &'static str {
+            "test always succeeds"
+        }
+    }
+
+    #[test]
+    fn test_peek_read_write() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let file_path = dir_path.join("test");
+        let buffer = FileBuffer::new(1024, file_path).unwrap();
+
+        let mut file = File {
+            buffer,
+            read: 0,
+            write: 0,
+            location: Location {
+                file: 0,
+                dir: Rc::new(dir_path),
+            },
+            version: Version::V1,
+        };
+
+        {
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 1024,
+                    space_to_read: 0
+                }
+            );
+            file.push(b"hello").unwrap();
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 977,
+                    space_to_read: 47
+                }
+            );
+            file.push(b"world").unwrap();
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 930,
+                    space_to_read: 94
+                }
+            );
+            file.push(b"kitties").unwrap();
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 881,
+                    space_to_read: 143
+                }
+            );
+        }
+
+        {
+            let pool = PoolImpl::new(1024, 1024);
+            let mut peek = file.peek(pool, TestBufferOwner);
+
+            assert_eq!(
+                peek.next()
+                    .unwrap()
+                    .unwrap()
+                    .data
+                    .into_inner()
+                    .data()
+                    .as_slice(),
+                b"hello"
+            );
+
+            assert_eq!(
+                peek.next()
+                    .unwrap()
+                    .unwrap()
+                    .data
+                    .into_inner()
+                    .data()
+                    .as_slice(),
+                b"world"
+            );
+
+            assert_eq!(
+                peek.next()
+                    .unwrap()
+                    .unwrap()
+                    .data
+                    .into_inner()
+                    .data()
+                    .as_slice(),
+                b"kitties"
+            );
+
+            assert!(peek.next().is_none());
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 881,
+                    space_to_read: 143
+                }
+            );
+        }
+
+        {
+            let pool = PoolImpl::new(1024, 1024);
+            let mut owned = pool.acquire(TestBufferOwner);
+            let Pop::Entry(pop) = file.pop(&mut owned).unwrap() else {
+                panic!("expected entry");
+            };
+            assert_eq!(pop.data.into_inner().data().as_slice(), b"hello");
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 928,
+                    space_to_read: 96
+                }
+            );
+        }
+
+        {
+            let pool = PoolImpl::new(1024, 1024);
+            let mut peek = file.peek(pool, TestBufferOwner);
+
+            assert_eq!(
+                peek.next()
+                    .unwrap()
+                    .unwrap()
+                    .data
+                    .into_inner()
+                    .data()
+                    .as_slice(),
+                b"world"
+            );
+
+            assert_eq!(
+                peek.next()
+                    .unwrap()
+                    .unwrap()
+                    .data
+                    .into_inner()
+                    .data()
+                    .as_slice(),
+                b"kitties"
+            );
+
+            assert!(peek.next().is_none());
+        }
+
+        {
+            let pool = PoolImpl::new(1024, 1024);
+            let mut owned = pool.acquire(TestBufferOwner);
+            let Pop::Entry(pop) = file.pop(&mut owned).unwrap() else {
+                panic!("expected entry");
+            };
+            assert_eq!(pop.data.into_inner().data().as_slice(), b"world");
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 975,
+                    space_to_read: 49
+                }
+            );
+
+            let Pop::Entry(pop) = file.pop(&mut owned).unwrap() else {
+                panic!("expected entry");
+            };
+            assert_eq!(pop.data.into_inner().data().as_slice(), b"kitties");
+
+            let Pop::WaitForFlush = file.pop(&mut owned).unwrap() else {
+                panic!("expected wait for flush");
+            };
+            assert_eq!(
+                file.remaining(),
+                Remaining {
+                    space_to_write: 1024,
+                    space_to_read: 0
+                }
+            );
+        }
+    }
 }

@@ -20,7 +20,7 @@ pub use error::Error;
 pub mod shard;
 pub mod store;
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub(super) struct Metadata {
     pub mask: u32,
     pub crc: u32,
@@ -81,6 +81,7 @@ where
     W: Write,
 {
     fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.mask.encode(writer)?;
         self.crc.encode(writer)?;
         self.file.encode(writer)?;
         self.offset.encode(writer)?;
@@ -103,7 +104,11 @@ where
             state: MetaState::decode(reader)?,
         };
 
-        assert_eq!(meta.mask, MASK, "Invalid mask");
+        if meta.mask != MASK {
+            return Err(necronomicon::Error::Decode(std::io::Error::other(
+                "bad mask",
+            )));
+        }
 
         Ok(meta)
     }
@@ -111,7 +116,7 @@ where
 
 impl Metadata {
     pub const fn size() -> usize {
-        size_of::<u32>() * 2 + size_of::<u64>() * 3 + size_of::<MetaState>()
+        Self::state_offset() + size_of::<MetaState>()
     }
 
     pub const fn state_offset() -> usize {
@@ -119,7 +124,8 @@ impl Metadata {
     }
 }
 
-pub(crate) struct MetadataRead<S>
+#[derive(Debug)]
+pub(crate) struct MetadataWithKey<S>
 where
     S: Shared,
 {
@@ -127,73 +133,47 @@ where
     pub key: BinaryData<S>,
 }
 
-#[derive(Debug)]
-pub(crate) struct MetadataWrite<'a> {
-    pub meta: Metadata,
-    pub key: &'a [u8],
+impl<S> MetadataWithKey<S>
+where
+    S: Shared,
+{
+    pub fn new(meta: Metadata, key: BinaryData<S>) -> Self {
+        Self { meta, key }
+    }
+
+    pub fn size(&self) -> usize {
+        // NOTE: keep in sync with `BinaryData` struct
+        // we need to use `size_of::<usize>()` to store the length of the key
+        Metadata::size() + size_of::<usize>() + self.key.len()
+    }
 }
 
-impl<'a> MetadataWrite<'a> {
-    pub fn size(&self) -> usize {
-        Metadata::size() + self.key.len()
+impl<S, W> Encode<W> for MetadataWithKey<S>
+where
+    S: Shared,
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.meta.encode(writer)?;
+        self.key.encode(writer)
+    }
+}
+
+impl<R, O> DecodeOwned<R, O> for MetadataWithKey<O::Shared>
+where
+    R: Read,
+    O: Owned,
+{
+    fn decode_owned(reader: &mut R, buffer: &mut O) -> Result<Self, necronomicon::Error> {
+        let meta = Metadata::decode(reader)?;
+        let key = BinaryData::decode_owned(reader, buffer)?;
+        Ok(Self { meta, key })
     }
 }
 
 // NOTE: keep in sync with `Metadata` struct
 pub(super) const fn metadata_block_size(key_size: usize) -> usize {
     Metadata::size() + key_size
-}
-
-// impl<S> From<MetadataRead<S>> for Tombstone
-// where
-//     S: Shared,
-// {
-//     fn from(val: MetadataRead<S>) -> Self {
-//         Self {
-//             crc: val.crc,
-//             file: val.file,
-//             offset: val.offset,
-//             len: val.len,
-//         }
-//     }
-// }
-
-impl<'a, S> From<&'a MetadataRead<S>> for MetadataWrite<'a>
-where
-    S: Shared,
-{
-    fn from(val: &'a MetadataRead<S>) -> Self {
-        Self {
-            meta: val.meta,
-            key: val.key.data().as_slice(),
-        }
-    }
-}
-
-impl<'a, W> Encode<W> for MetadataWrite<'a>
-where
-    W: Write,
-{
-    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
-        self.meta.encode(writer)?;
-        self.key.encode(writer)?;
-        Ok(())
-    }
-}
-
-impl<R, O> DecodeOwned<R, O> for MetadataRead<O::Shared>
-where
-    R: Read,
-    O: Owned,
-{
-    fn decode_owned(reader: &mut R, buffer: &mut O) -> Result<Self, necronomicon::Error>
-    where
-        Self: Sized,
-    {
-        let meta = Metadata::decode(reader)?;
-        let key = BinaryData::decode_owned(reader, buffer)?;
-        Ok(Self { meta, key })
-    }
 }
 
 pub(crate) fn decode_key<B>(

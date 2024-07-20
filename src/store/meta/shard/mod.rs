@@ -1,9 +1,12 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    ops::Range,
+};
 
 use necronomicon::{Pool as _, PoolImpl};
 
 use crate::{
-    buffer::{Buffer as _, Error as BufferError, MmapBuffer},
+    buffer::{Buffer, Error as BufferError, Flush, MmapBuffer},
     calculate_hash,
     store::MetaState,
     u64_to_usize, usize_to_u64,
@@ -14,13 +17,13 @@ use super::{decode_key, Metadata};
 mod buffer_owner;
 use buffer_owner::BufferOwner;
 
-pub(super) mod delete;
+pub(crate) mod delete;
 
 mod error;
 pub use error::Error;
 
-pub(super) mod get;
-pub(super) mod put;
+pub(crate) mod get;
+pub(crate) mod put;
 
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Tombstone {
@@ -28,10 +31,16 @@ pub(super) struct Tombstone {
     offset: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
+impl From<Tombstone> for Range<usize> {
+    fn from(tombstone: Tombstone) -> Self {
+        tombstone.offset..tombstone.offset + tombstone.len
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Lookup {
-    file: u64,
-    offset: u64,
+    pub file: u64,
+    pub offset: u64,
 }
 
 pub(super) struct Shard {
@@ -122,7 +131,7 @@ impl Shard {
             if reduced_tombs.is_empty() {
                 reduced_tombs.push(tomb);
             } else {
-                let last = reduced_tombs.last().unwrap();
+                let last = reduced_tombs.last_mut().unwrap();
                 if last.offset + last.len == tomb.offset {
                     last.len += tomb.len;
                 } else if last.offset == tomb.offset {
@@ -135,24 +144,18 @@ impl Shard {
 
         // This is safe because we have to have at least one tombstone.
         // As we checked for this earlier.
-        let first = reduced_tombs.first().unwrap();
-        let mut out = vec![];
-        {
-            let buffer = self.buffer.as_ref();
-            out.extend_from_slice(&buffer[..first.offset]);
-
-            let mut cursor = first.offset + first.len;
-            for tomb in reduced_tombs.iter().skip(1) {
-                out.extend_from_slice(&buffer[cursor..tomb.offset]);
-                cursor = tomb.offset + tomb.len;
-            }
-
-            out.extend_from_slice(&buffer[cursor..u64_to_usize(self.cursor)]);
-        }
-        self.buffer.write_at(&out, 0);
+        let delete_size = u64::try_from(reduced_tombs.iter().map(|tomb| tomb.len).sum::<usize>())
+            .expect("usize -> u64");
+        let new_size = self.cursor - delete_size;
+        let ranges = reduced_tombs
+            .into_iter()
+            .map(Range::from)
+            .collect::<Vec<_>>();
+        let flush = self.buffer.compact(&ranges)?;
+        flush.flush()?;
 
         // TODO: double check this.
-        self.cursor = usize_to_u64(out.len());
+        self.cursor = new_size;
 
         Ok(())
     }

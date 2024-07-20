@@ -1,3 +1,4 @@
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(super) enum BufferOwner {
     Graveyard,
     Delete,

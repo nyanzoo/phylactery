@@ -1,10 +1,9 @@
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 
 use super::tombstone::Tombstone;
 
 pub struct Graveyard {
     tombs: Vec<Tombstone>,
-    node_size: u64,
     max_disk_usage: u64,
     amount_dead: u64,
 }
@@ -33,157 +32,88 @@ pub struct CopyRange {
     end: u64,
 }
 
-pub struct NewNode {
-    ranges: Vec<CopyRange>,
-    fill: u64,
+pub struct Compaction {
+    file_to_tombs: BTreeMap<u64, Vec<Tombstone>>,
 }
 
-pub struct Compaction {
-    nodes: Vec<NewNode>,
+impl Compaction {
+    fn shards(&self) -> impl Iterator<Item = &u64> {
+        self.file_to_tombs.keys()
+    }
 }
 
 impl Graveyard {
-    fn new(max_disk_usage: u64, node_size: u64) -> Self {
+    pub(crate) fn new(max_disk_usage: u64) -> Self {
         Self {
-            tombs: Vec::new(),
+            tombs: vec![],
             max_disk_usage,
             amount_dead: 0,
-            node_size,
         }
     }
 
-    fn bury(&mut self, tomb: Tombstone) {
+    pub(crate) fn bury(&mut self, tomb: Tombstone) {
         self.tombs.push(tomb);
         self.amount_dead += tomb.len;
     }
 
-    fn compact(self, file_start: u64) -> Compaction {
-        let Self {
-            tombs,
-            max_disk_usage,
-            amount_dead,
-            node_size,
-        } = self;
+    pub(crate) fn should_compact(&self) -> bool {
+        self.amount_dead > ((self.max_disk_usage * 10) / 100)
+    }
 
-        let reduction = reduce_tombs(tombs);
+    pub(crate) fn compact(&mut self) -> Compaction {
+        let Self { tombs, .. } = self;
 
         // map the tombstones to the files
-        let tomb_map = map_tombs(reduction);
-
-        // now we need to create the copy ranges
-        let ranges = copy_ranges(tomb_map, self.node_size);
-
-        // now we need to create the new nodes
-        let mut new_nodes = vec![];
-        let mut current_file = file_start;
-
-        for range in ranges {
-            if new_nodes.is_empty() {
-                let new_node = NewNode {
-                    ranges: vec![range],
-                    fill: range.end - range.start,
-                };
-                new_nodes.push(new_node);
-
-                current_file = range.file;
-            } else {
-                let mut new_node = new_nodes.last_mut().expect("no new nodes");
-                let len = range.end - range.start;
-                if new_node.fill + len < node_size {
-                    new_node.ranges.push(range);
-                    new_node.fill += len;
-                } else {
-                    let new_node = NewNode {
-                        ranges: vec![range],
-                        fill: len,
-                    };
-                    new_nodes.push(new_node);
-                }
-            }
+        Compaction {
+            file_to_tombs: map_tombs_to_files(reduce_tombs(std::mem::take(tombs))),
         }
-
-        Compaction { nodes: new_nodes }
     }
 }
 
-fn reduce_tombs(mut tombs: Vec<Tombstone>) -> VecDeque<Tombstone> {
-    let mut reduction = VecDeque::new();
+fn reduce_tombs(tombs: Vec<Tombstone>) -> Vec<Tombstone> {
+    let mut reduction = vec![];
 
-    // compact the tombstones first
-    tombs.sort_by(|a, b| a.offset.cmp(&b.offset));
-
+    let mut map = BTreeMap::new();
     for tomb in tombs {
-        if reduction.is_empty() {
-            reduction.push_back(tomb);
-        } else {
-            let last = reduction.back().expect("no tombstones");
-            if last.offset + last.len == tomb.offset {
-                reduction.back_mut().expect("no tombstones").len += tomb.len;
-            } else if last.offset == tomb.offset {
-                // skip
-            } else {
-                reduction.push_back(tomb);
-            }
-        }
+        map.entry(tomb.file).or_insert_with(Vec::new).push(tomb);
+    }
+
+    for (_, tombs) in &mut map {
+        reduction.extend(reduce_tombs_for_file(tombs));
     }
 
     reduction
 }
 
-fn map_tombs(mut reduction: VecDeque<Tombstone>) -> Vec<Vec<Tombstone>> {
-    let mut tomb_map = vec![];
-    for tomb in reduction.drain(..) {
-        if tomb_map.is_empty() {
-            tomb_map.push(vec![tomb]);
+fn reduce_tombs_for_file(tombs: &mut Vec<Tombstone>) -> Vec<Tombstone> {
+    let mut reduction = vec![];
+    tombs.sort_by(|a, b| a.offset.cmp(&b.offset));
+    for tomb in tombs.drain(..) {
+        if reduction.is_empty() {
+            reduction.push(tomb);
         } else {
-            let last = tomb_map.last_mut().expect("no tombstones");
-            let current_file = last.first().expect("no tombstone").file;
-            if current_file == tomb.file {
-                tomb_map.last_mut().expect("no tombstones").push(tomb);
+            let last = reduction.last().expect("no tombstones");
+            if last.offset + last.len == tomb.offset {
+                reduction.last_mut().expect("no tombstones").len += tomb.len;
+            } else if last.offset == tomb.offset {
+                // skip
             } else {
-                tomb_map.push(vec![tomb]);
+                reduction.push(tomb);
             }
         }
     }
-    tomb_map
+    reduction
 }
 
-fn copy_ranges(mut tomb_map: Vec<Vec<Tombstone>>, node_size: u64) -> Vec<CopyRange> {
-    let mut ranges = vec![];
-    let mut start = 0;
-    let mut current_file = 0;
-    for tombs in tomb_map.drain(..) {
-        for tomb in tombs {
-            if ranges.is_empty() {
-                if tomb.offset == 0 {
-                    start = tomb.len;
-                } else {
-                    ranges.push(CopyRange {
-                        file: tomb.file,
-                        start,
-                        end: tomb.offset,
-                    });
-                    start = tomb.offset + tomb.len;
-                }
-            } else {
-                ranges.push(CopyRange {
-                    file: tomb.file,
-                    start,
-                    end: tomb.offset,
-                });
-                start = tomb.offset + tomb.len;
-            }
-            current_file = tomb.file;
-        }
+fn map_tombs_to_files(mut reduction: Vec<Tombstone>) -> BTreeMap<u64, Vec<Tombstone>> {
+    let mut tomb_map = BTreeMap::new();
+    for tomb in reduction.drain(..) {
+        tomb_map
+            .entry(tomb.file)
+            .or_insert_with(Vec::new)
+            .push(tomb);
     }
-
-    ranges.push(CopyRange {
-        file: current_file,
-        start,
-        end: node_size,
-    });
-
-    ranges
+    tomb_map
 }
 
 #[cfg(test)]
@@ -214,11 +144,36 @@ mod test {
             test_tomb(2, 90, 10),
         ];
 
-        let reduction = reduce_tombs(tombs);
-        assert_eq!(reduction.len(), 5);
-        let tomb = reduction.front().expect("no tombstone");
-        assert_eq!(tomb.file, 0);
-        assert_eq!(tomb.offset, 0);
-        assert_eq!(tomb.len, 100);
+        assert_eq!(
+            reduce_tombs(tombs),
+            [
+                test_tomb(0, 0, 20),
+                test_tomb(0, 30, 10),
+                test_tomb(1, 30, 10),
+                test_tomb(1, 50, 10),
+                test_tomb(1, 70, 10),
+                test_tomb(2, 0, 70),
+                test_tomb(2, 80, 20),
+            ]
+            .to_vec()
+        );
+    }
+
+    #[test]
+    fn test_map_tombs_to_files() {
+        let mut expected = BTreeMap::new();
+        expected.insert(0, vec![test_tomb(0, 0, 20), test_tomb(0, 40, 10)]);
+
+        expected.insert(1, vec![test_tomb(1, 30, 10), test_tomb(1, 50, 10)]);
+
+        assert_eq!(
+            map_tombs_to_files(vec![
+                test_tomb(0, 0, 20),
+                test_tomb(0, 40, 10),
+                test_tomb(1, 30, 10),
+                test_tomb(1, 50, 10),
+            ]),
+            expected
+        );
     }
 }

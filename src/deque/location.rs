@@ -2,14 +2,14 @@ use std::{path::PathBuf, rc::Rc};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Location {
-    pub dir: Rc<String>,
+    pub dir: Rc<PathBuf>,
     pub file: u64,
 }
 
 impl Location {
-    pub fn new(dir: impl ToString, file: u64) -> Self {
+    pub fn new(dir: impl Into<PathBuf>, file: u64) -> Self {
         Self {
-            dir: Rc::new(dir.to_string()),
+            dir: Rc::new(dir.into()),
             file,
         }
     }
@@ -23,6 +23,9 @@ impl Location {
     }
 
     pub fn move_forward(&mut self) {
-        *self = Self::new(self.dir.clone(), self.file + 1);
+        *self = Self {
+            dir: self.dir.clone(),
+            file: self.file + 1,
+        };
     }
 }

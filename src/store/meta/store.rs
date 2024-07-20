@@ -43,6 +43,14 @@ impl Store {
         })
     }
 
+    pub fn compact(&mut self, shards: &[usize]) -> Result<(), Error> {
+        for shard in shards {
+            let shard = &mut self.shards[*shard];
+            shard.compact().map_err(Error::Shard)?;
+        }
+        Ok(())
+    }
+
     pub fn delete(&mut self, key: BinaryData<SharedImpl>) -> Result<Option<Delete>, Error> {
         let shard = shard(&key, self.shards.len());
         let shard = &mut self.shards[shard];
@@ -58,9 +66,7 @@ impl Store {
     pub fn prepare_put(&mut self, key: BinaryData<SharedImpl>) -> Result<PreparePut, Error> {
         let shard = shard(&key, self.shards.len());
         let shard = &mut self.shards[shard];
-        shard
-            .prepare_put(key.data().as_slice())
-            .map_err(Error::Shard)
+        shard.prepare_put(key).map_err(Error::Shard)
     }
 
     pub fn put(
@@ -82,4 +88,41 @@ where
     T: Hash,
 {
     u64_to_usize(calculate_hash(t)) % shards
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::store::meta::shard::Lookup;
+
+    use super::*;
+
+    use necronomicon::SharedImpl;
+    use tempfile::tempdir;
+
+    const SHARD_COUNT: usize = 100;
+
+    #[test]
+    fn test_store() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf().to_str().unwrap().to_string();
+        let mut store =
+            Store::new(dir_path, PoolImpl::new(0x1000, 0x1000), SHARD_COUNT, 0x1000).unwrap();
+        let key = BinaryData::new(SharedImpl::test_new(b"kittens"));
+
+        let prepare = store.prepare_put(key.clone()).unwrap();
+
+        let mut put = store.put(key.clone(), prepare, 0, 0, 10).unwrap();
+        let location = put.lookup();
+        put.commit().unwrap();
+
+        let get = Lookup::from(store.get(key.clone()).unwrap().unwrap());
+        assert_eq!(get, location);
+
+        let mut delete = store.delete(key.clone()).unwrap().unwrap();
+        delete.commit().unwrap();
+        assert_eq!(location, delete.lookup());
+
+        assert_eq!(store.get(key).unwrap(), None);
+    }
 }

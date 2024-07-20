@@ -100,15 +100,12 @@ impl Metadata {
         8 + size + 4
     }
 
-    pub const fn struct_size() -> u32 {
-        u32::try_from(
-            size_of::<u32>() + // mask
+    pub const fn struct_size() -> usize {
+        size_of::<u32>() + // mask
             size_of::<u64>() + // read_ptr
             size_of::<u64>() + // write_ptr
             size_of::<u32>() + // size
-            size_of::<u32>(), // crc
-        )
-        .expect("usize to u32")
+            size_of::<u32>() // crc
     }
 
     pub fn verify(&self) -> Result<(), Error> {
@@ -138,6 +135,6 @@ mod tests {
 
     #[test]
     fn test_metadata_size() {
-        assert_eq!(Metadata::struct_size(), 36);
+        assert_eq!(Metadata::struct_size(), 28);
     }
 }

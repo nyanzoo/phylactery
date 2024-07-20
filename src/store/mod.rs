@@ -9,12 +9,10 @@ pub mod config;
 mod graveyard;
 
 mod data;
+mod error;
 mod meta;
 mod metadata;
-
-use crate::Error;
-
-use self::config::Config;
+mod store;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub(crate) enum MetaState {

@@ -1,5 +1,5 @@
 mod error;
-use error::Error;
+pub use error::Error;
 
 mod shard;
-mod store;
+pub mod store;

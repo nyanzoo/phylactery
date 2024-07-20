@@ -1,9 +1,11 @@
+use necronomicon::{BinaryData, Shared};
+
 use crate::{
-    buffer::{Buffer as _, Flush, MmapBuffer},
+    buffer::{Buffer, Flush, MmapBuffer},
     calculate_hash,
     store::meta::{
         shard::{Error, Lookup, Shard},
-        Metadata, MetadataWrite,
+        Metadata, MetadataWithKey,
     },
     u64_to_usize, usize_to_u64,
 };
@@ -14,13 +16,21 @@ pub(crate) struct PreparePut {
     hash: u64,
 }
 
-pub(crate) struct Put<'a> {
+pub(crate) struct Put {
     lookup: Lookup,
     metadata: Metadata,
-    flush: Flush<'a, MmapBuffer>,
+    flush: Flush<<MmapBuffer as Buffer>::Flushable>,
 }
 
-impl<'a> Put<'a> {
+impl Put {
+    pub(crate) fn lookup(&self) -> Lookup {
+        self.lookup
+    }
+
+    pub(crate) fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
     pub(crate) fn commit(&mut self) -> Result<(), Error> {
         self.flush.flush()?;
         Ok(())
@@ -28,13 +38,13 @@ impl<'a> Put<'a> {
 }
 
 impl Shard {
-    pub(crate) fn prepare_put(&mut self, key: &[u8]) -> Result<PreparePut, Error> {
+    pub(crate) fn prepare_put<S>(&mut self, key: BinaryData<S>) -> Result<PreparePut, Error>
+    where
+        S: Shared,
+    {
         // We must start with compacting and only change to `Full`
         // if we succeed in writing the data.
-        let meta = MetadataWrite {
-            meta: Metadata::tombstone(),
-            key,
-        };
+        let meta = MetadataWithKey::new(Metadata::tombstone(), key.clone());
 
         // ignore the flush, we will do that at the end of a store transaction(s).
         let _ = self
@@ -72,8 +82,6 @@ impl Shard {
             self.buffer
                 .encode_at(u64_to_usize(lookup.offset), Metadata::size(), &metadata)?;
 
-        let offset = u64_to_usize(self.cursor);
-        let len = usize::try_from(meta_size).expect("u64 to usize");
         self.cursor += meta_size;
         self.entries.entry(hash).or_default().push_back(lookup);
 

@@ -17,9 +17,9 @@ impl Metadata {
         }
     }
 
-    pub const fn struct_size(version: Version) -> u32 {
+    pub const fn struct_size(version: Version) -> usize {
         match version {
-            Version::V1 => VERSION_SIZE as u32 + v1::Metadata::struct_size(),
+            Version::V1 => VERSION_SIZE + v1::Metadata::struct_size(),
         }
     }
 
