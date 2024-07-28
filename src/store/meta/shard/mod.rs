@@ -9,7 +9,6 @@ use crate::{
     buffer::{Buffer, Error as BufferError, MmapBuffer},
     calculate_hash,
     store::MetaState,
-    usize_to_u64,
 };
 
 use super::{decode_key, Metadata};

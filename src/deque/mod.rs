@@ -189,7 +189,7 @@ impl Deque {
         }
         let (node, file) = self.deque.front_mut().expect("empty");
         if file.is_none() {
-            file.replace(node.open()?);
+            file.replace(node.read()?);
         }
         Ok(Some((node, file.as_mut().expect("file"))))
     }

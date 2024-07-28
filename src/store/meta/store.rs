@@ -111,6 +111,7 @@ mod tests {
 
         let mut put = store.put(key.clone(), prepare, 0, 0, 10).unwrap();
         let location = put.lookup();
+        put.prepare().unwrap();
         put.commit().unwrap();
 
         let Get { lookup, .. } = store.get(key.clone()).unwrap().unwrap();
@@ -121,5 +122,37 @@ mod tests {
         assert_eq!(location, delete.lookup());
 
         assert!(store.get(key).unwrap().is_none());
+    }
+
+    #[test]
+    fn store_put() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf().to_str().unwrap().to_string();
+        let mut store = Store::new(
+            dir_path,
+            PoolImpl::new(BLOCK_SIZE, POOL_SIZE),
+            SHARDS,
+            SHARD_LEN * 0x1000,
+        )
+        .unwrap();
+
+        let mut commits = vec![];
+        let now = std::time::Instant::now();
+        for i in 0..100_000 {
+            let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
+            let prepare = store.prepare_put(key.clone()).unwrap();
+            let put = store.put(key.clone(), prepare, 0, 0, 10).unwrap();
+            commits.push(put);
+        }
+        let elapsed = now.elapsed();
+        println!("100,000 put: {:?}", elapsed);
+
+        let now = std::time::Instant::now();
+        for mut put in commits {
+            put.prepare().unwrap();
+            put.commit().unwrap();
+        }
+        let elapsed = now.elapsed();
+        println!("100,000 commit: {:?}", elapsed);
     }
 }

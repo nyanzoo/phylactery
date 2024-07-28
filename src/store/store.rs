@@ -12,6 +12,7 @@ use crate::{
 };
 
 use super::{
+    cache::LRU,
     data::store::Store as DataStore,
     error::Error,
     graveyard::graveyard::Graveyard,
@@ -27,6 +28,7 @@ pub struct Store {
     meta: MetaDataStore,
     data: DataStore,
     graveyards: Vec<Graveyard>,
+    cache: LRU<BinaryData<SharedImpl>, BinaryData<SharedImpl>>,
 }
 
 impl Store {
@@ -49,6 +51,7 @@ impl Store {
             meta,
             data,
             graveyards,
+            cache: LRU::new(30_000),
         })
     }
 
@@ -84,6 +87,10 @@ impl Store {
         key: BinaryData<SharedImpl>,
         buffer: &mut OwnedImpl,
     ) -> Result<Option<Readable<SharedImpl>>, Error> {
+        if let Some(value) = self.cache.get(&key) {
+            let data = Readable::new(crate::entry::Version::V1, value.clone());
+            return Ok(Some(data));
+        }
         if let Some(shard::get::Get { lookup, metadata }) = self.meta.get(key.clone())? {
             let super::meta::Metadata {
                 mask,
@@ -119,7 +126,7 @@ impl Store {
     ) -> Result<Option<Put>, Error> {
         let prepare = self.meta.prepare_put(key.clone())?;
         // println!("prepare");
-        match self
+        let res = match self
             .data
             .put(prepare.lookup.shard, value.data().as_slice())?
         {
@@ -132,7 +139,7 @@ impl Store {
             } => {
                 // println!("entry");
                 assert_eq!(crc, v1::generate_crc(value.data().as_slice()));
-                let meta_put = self.meta.put(key, prepare, file, offset, len)?;
+                let meta_put = self.meta.put(key.clone(), prepare, file, offset, len)?;
                 // println!("meta_put");
                 Ok(Some(Put {
                     data_flush: flush,
@@ -140,7 +147,13 @@ impl Store {
                 }))
             }
             Push::Full => Ok(None),
+        };
+
+        if res.is_ok() {
+            self.cache.put(key, value);
         }
+
+        res
     }
 }
 
@@ -183,20 +196,27 @@ mod test {
             let put = store.put(key, value).unwrap().unwrap();
             flushes.push(put);
         }
+        let elapsed = now.elapsed();
+        println!("100,000 put: {:?}", elapsed);
+        // crate::store::tree(&dir_path);
 
-        crate::store::tree(&dir_path);
-
+        let now = std::time::Instant::now();
         for Put {
             data_flush,
             mut meta,
         } in flushes
         {
+            meta.prepare().unwrap();
             data_flush.flush().unwrap();
             meta.commit().unwrap();
         }
+        let elapsed = now.elapsed();
+        println!("100,000 flush: {:?}", elapsed);
 
+        let now = std::time::Instant::now();
         let pool = PoolImpl::new(BLOCK_SIZE, CAPACITY);
-        for i in 0..100_000 {
+        let random_range = rand::seq::index::sample(&mut rand::thread_rng(), 100_000, 100_000);
+        for i in random_range {
             let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
             let mut buffer = pool.acquire("test");
             let data = store.get(key, &mut buffer).unwrap().unwrap();
@@ -206,6 +226,6 @@ mod test {
             );
         }
         let elapsed = now.elapsed();
-        println!("100,000 put/get: {:?}", elapsed);
+        println!("100,000 get: {:?}", elapsed);
     }
 }

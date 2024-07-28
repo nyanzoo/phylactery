@@ -1,24 +1,26 @@
+use std::hash::{Hash as _, Hasher as _};
+
 use necronomicon::{BinaryData, Shared};
 
 use crate::{
-    buffer::{Buffer, Flush, MmapBuffer},
-    calculate_hash,
-    store::meta::{
+    buffer::{Buffer, Flush, MmapBuffer}, calculate_hash, store::meta::{
         shard::{Error, Lookup, Shard},
         Metadata, MetadataWithKey,
-    },
+    }
 };
 
 pub(crate) struct PreparePut {
     pub lookup: Lookup,
     pub meta_size: usize,
     pub hash: u64,
+    pub flush: Flush<<MmapBuffer as Buffer>::Flushable>,
 }
 
 pub(crate) struct Put {
     lookup: Lookup,
     metadata: Metadata,
     flush: Flush<<MmapBuffer as Buffer>::Flushable>,
+    prepare_flush: Flush<<MmapBuffer as Buffer>::Flushable>,
 }
 
 impl Put {
@@ -28,6 +30,11 @@ impl Put {
 
     pub(crate) fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+
+    pub(crate) fn prepare(&mut self) -> Result<(), Error> {
+        self.prepare_flush.flush()?;
+        Ok(())
     }
 
     pub(crate) fn commit(&mut self) -> Result<(), Error> {
@@ -44,9 +51,13 @@ impl Shard {
         // We must start with compacting and only change to `Full`
         // if we succeed in writing the data.
         let meta = MetadataWithKey::new(Metadata::tombstone(), key.clone());
+        if self.cursor + Metadata::size() > self.buffer.capacity() as usize {
+            return Err(Error::Full);
+        }
         // println!("cursor {} & size {}", self.cursor, meta.size());
         // ignore the flush, we will do that at the end of a store transaction(s).
-        let _ = self.buffer.encode_at(self.cursor, meta.size(), &meta)?;
+        let flush = self.buffer.encode_at(self.cursor, meta.size(), &meta)?;
+        let hash = calculate_hash(&key);
 
         Ok(PreparePut {
             lookup: Lookup {
@@ -54,7 +65,8 @@ impl Shard {
                 offset: self.cursor,
             },
             meta_size: meta.size(),
-            hash: calculate_hash(&key),
+            hash,
+            flush,
         })
     }
 
@@ -69,6 +81,7 @@ impl Shard {
             lookup,
             meta_size,
             hash,
+            flush: prepare_flush,
         } = prepare;
         assert_eq!(lookup.offset, self.cursor);
         assert_eq!(lookup.shard, self.shard);
@@ -86,6 +99,7 @@ impl Shard {
             lookup,
             metadata,
             flush,
+            prepare_flush,
         })
     }
 }

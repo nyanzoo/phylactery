@@ -11,6 +11,7 @@ name = "phylactery"
 [dependencies]
 crc32fast = "1"
 hashlink = "0.9"
+hashring = "0.3"
 libc = "0.2"
 log = "0.4"
 memmap2 = "0"
@@ -24,6 +25,7 @@ necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "deve
 coverage-helper = "0"
 criterion = "0.5"
 matches = "0"
+rand = "0.8"
 tempfile = "3"
 test-case = "3"
 

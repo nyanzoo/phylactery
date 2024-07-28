@@ -27,15 +27,24 @@ pub struct FileBuffer(Rc<RefCell<InnerFile>>);
 impl FileBuffer {
     #[must_use]
     pub fn new(size: u64, file: PathBuf) -> std::io::Result<Self> {
-        let mut buffer = vec![0; size as usize];
+        let buffer = vec![0; size as usize];
         {
-            let mut file = std::fs::OpenOptions::new()
-                .read(true)
+            std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .open(&file)?;
-            let file_size = usize::try_from(file.metadata()?.len()).expect("u64 -> usize");
-            file.read_exact(&mut buffer[..file_size])?;
+        }
+        let inner = InnerFile::new(LazyWriteFile(buffer, file));
+        let rc = Rc::new(RefCell::new(inner));
+        Ok(Self(rc))
+    }
+
+    pub fn read(size: u64, file: PathBuf) -> std::io::Result<Self> {
+        let mut buffer = vec![0; size as usize];
+        {
+            let mut file = std::fs::OpenOptions::new().read(true).open(&file)?;
+            // let file_size = usize::try_from(file.metadata()?.len()).expect("u64 -> usize");
+            file.read_exact(&mut buffer[..size as usize])?;
         }
 
         let inner = InnerFile::new(LazyWriteFile(buffer, file));
@@ -166,6 +175,7 @@ impl InnerFile {
         if self.dirty {
             let inner = unsafe { &mut *self.inner.get() };
             inner.flush()?;
+            self.dirty = false;
         }
 
         Ok(())

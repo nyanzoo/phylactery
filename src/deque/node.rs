@@ -58,6 +58,28 @@ impl DequeNode {
         })
     }
 
+    pub(crate) fn read(&self) -> Result<File,Error> {
+        let Self {
+            location,
+            buffer_size,
+            version,
+        } = self;
+
+        let buffer = FileBuffer::read(*buffer_size, location.path())?;
+        let meta = last_metadata(&buffer, *version)?;
+
+        let read = meta.map(|meta| meta.read_ptr()).unwrap_or_default() as usize;
+        let write = meta.map(|meta| meta.write_ptr()).unwrap_or_default() as usize;
+
+        Ok(File {
+            buffer,
+            read,
+            write,
+            location: self.location.clone(),
+            version: self.version,
+        })
+    }
+
     pub(crate) fn delete(&self) -> Result<(), Error> {
         let path = self.location.path();
         std::fs::remove_file(path)?;
