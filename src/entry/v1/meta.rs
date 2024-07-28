@@ -134,7 +134,7 @@ mod tests {
     use super::Metadata;
 
     #[test]
-    fn test_metadata_size() {
+    fn metadata_size() {
         assert_eq!(Metadata::struct_size(), 28);
     }
 }

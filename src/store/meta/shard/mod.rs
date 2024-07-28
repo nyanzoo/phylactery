@@ -6,10 +6,10 @@ use std::{
 use necronomicon::{Pool as _, PoolImpl};
 
 use crate::{
-    buffer::{Buffer, Error as BufferError, Flush, MmapBuffer},
+    buffer::{Buffer, Error as BufferError, MmapBuffer},
     calculate_hash,
     store::MetaState,
-    u64_to_usize, usize_to_u64,
+    usize_to_u64,
 };
 
 use super::{decode_key, Metadata};
@@ -39,15 +39,15 @@ impl From<Tombstone> for Range<usize> {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Lookup {
-    pub file: u64,
-    pub offset: u64,
+    pub shard: usize,
+    pub offset: usize,
 }
 
 pub(super) struct Shard {
     buffer: MmapBuffer,
     dir: String,
-    shard: u64,
-    cursor: u64,
+    shard: usize,
+    cursor: usize,
     tombstones: Vec<Tombstone>,
     /// Entries are stored in a BTreeMap to allow for efficient queries.
     /// We hash the key and use the the hash as the key in the BTreeMap.
@@ -59,7 +59,7 @@ pub(super) struct Shard {
 }
 
 impl Shard {
-    pub(super) fn new(dir: String, shard: u64, len: u64, pool: &PoolImpl) -> Result<Self, Error> {
+    pub(super) fn new(dir: String, shard: usize, len: u64, pool: &PoolImpl) -> Result<Self, Error> {
         let buffer = MmapBuffer::new(&format!("{dir}/{shard}.bin"), len)?;
 
         // Scan the file for tombstones.
@@ -96,10 +96,7 @@ impl Shard {
 
                 tombstones.push(tombstone);
             } else {
-                let lookup = Lookup {
-                    file: shard,
-                    offset: usize_to_u64(offset),
-                };
+                let lookup = Lookup { shard, offset };
 
                 entries
                     .entry(calculate_hash(&key))
@@ -112,7 +109,7 @@ impl Shard {
             buffer,
             dir,
             shard,
-            cursor: usize_to_u64(start),
+            cursor: start,
             tombstones,
             entries,
         })
@@ -144,8 +141,7 @@ impl Shard {
 
         // This is safe because we have to have at least one tombstone.
         // As we checked for this earlier.
-        let delete_size = u64::try_from(reduced_tombs.iter().map(|tomb| tomb.len).sum::<usize>())
-            .expect("usize -> u64");
+        let delete_size = reduced_tombs.iter().map(|tomb| tomb.len).sum::<usize>();
         let new_size = self.cursor - delete_size;
         let ranges = reduced_tombs
             .into_iter()

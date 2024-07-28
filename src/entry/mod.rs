@@ -96,7 +96,7 @@ mod tests {
     use super::{v1, Metadata, Version};
 
     #[test]
-    fn test_metadata_size() {
+    fn metadata_size() {
         // 1 bytes for the enum variant
         // rest from actual struct
         assert_eq!(Metadata::struct_size(Version::V1), 29);

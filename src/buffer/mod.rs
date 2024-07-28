@@ -14,7 +14,7 @@ mod error;
 pub use error::Error;
 
 mod file;
-pub use file::FileBuffer;
+pub use file::{FileBuffer, LazyWriteFileFlush};
 
 mod mem;
 pub use mem::InMemBuffer;

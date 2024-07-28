@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 
-use log::trace;
 use necronomicon::{Decode, Encode};
 
 mod cache;
@@ -276,3 +275,31 @@ mod test {
 
 //     Ok((store, graveyard))
 // }
+
+#[allow(dead_code)]
+#[cfg(test)]
+pub fn tree(path: &std::path::Path) {
+    std::io::stdout()
+        .write_all(
+            &std::process::Command::new("tree")
+                .arg(path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+}
+
+#[allow(dead_code)]
+#[cfg(test)]
+pub fn hexyl(path: &std::path::Path) {
+    std::io::stdout()
+        .write_all(
+            &std::process::Command::new("hexyl")
+                .arg(path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+}

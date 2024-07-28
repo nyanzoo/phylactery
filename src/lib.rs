@@ -12,6 +12,7 @@ pub use error::Error;
 
 pub mod scheduler;
 pub mod store;
+pub mod uring;
 
 pub const BAD_MASK: u32 = 0xDEAD_BEA7; // deadbeat
 pub const MASK: u32 = 0xBAD5_EED5; // badseeds

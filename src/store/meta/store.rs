@@ -1,22 +1,15 @@
-use std::hash::Hash;
+use hashring::HashRing;
+use necronomicon::{BinaryData, PoolImpl, SharedImpl};
 
-use necronomicon::{BinaryData, PoolImpl, Shared, SharedImpl};
-
-use crate::{
-    calculate_hash,
-    store::meta::{
-        error::Error,
-        shard::{
-            delete::Delete,
-            get::Get,
-            put::{PreparePut, Put},
-            Shard,
-        },
+use crate::store::meta::{
+    error::Error,
+    shard::{
+        delete::Delete,
+        get::Get,
+        put::{PreparePut, Put},
+        Shard,
     },
-    u64_to_usize, usize_to_u64,
 };
-
-const SHARD_COUNT: usize = 0x40;
 
 /// The metadata store. This manages all metadata pertaining to actual data entries.
 pub struct Store {
@@ -26,20 +19,25 @@ pub struct Store {
     pool: PoolImpl,
     /// A sharded set of files for storing metadata entries.
     shards: Vec<Shard>,
+    /// hasher for calculating shard index
+    hasher: HashRing<usize>,
 }
 
 impl Store {
     /// Create a new metadata store.
     pub fn new(dir: String, pool: PoolImpl, shards: usize, shard_len: u64) -> Result<Self, Error> {
         let mut shards_v = vec![];
+        let mut hasher = HashRing::new();
         for shard in 0..shards {
-            let shard = Shard::new(dir.clone(), usize_to_u64(shard), shard_len, &pool)?;
+            hasher.add(shard);
+            let shard = Shard::new(dir.clone(), shard, shard_len, &pool)?;
             shards_v.push(shard);
         }
         Ok(Self {
             dir,
             pool,
             shards: shards_v,
+            hasher,
         })
     }
 
@@ -52,19 +50,19 @@ impl Store {
     }
 
     pub fn delete(&mut self, key: BinaryData<SharedImpl>) -> Result<Option<Delete>, Error> {
-        let shard = shard(&key, self.shards.len());
+        let shard = self.hasher.get(&key).copied().expect("no shards");
         let shard = &mut self.shards[shard];
         shard.delete(key, &self.pool).map_err(Error::Shard)
     }
 
     pub fn get(&mut self, key: BinaryData<SharedImpl>) -> Result<Option<Get>, Error> {
-        let shard = shard(&key, self.shards.len());
+        let shard = self.hasher.get(&key).copied().expect("no shards");
         let shard = &mut self.shards[shard];
         shard.get(key, &self.pool).map_err(Error::Shard)
     }
 
     pub fn prepare_put(&mut self, key: BinaryData<SharedImpl>) -> Result<PreparePut, Error> {
-        let shard = shard(&key, self.shards.len());
+        let shard = self.hasher.get(&key).copied().expect("no shards");
         let shard = &mut self.shards[shard];
         shard.prepare_put(key).map_err(Error::Shard)
     }
@@ -77,37 +75,36 @@ impl Store {
         offset: u64,
         len: u64,
     ) -> Result<Put, Error> {
-        let shard = shard(&key, self.shards.len());
+        let shard = self.hasher.get(&key).copied().expect("no shards");
         let shard = &mut self.shards[shard];
         shard.put(prepare, file, offset, len).map_err(Error::Shard)
     }
 }
 
-fn shard<T>(t: &T, shards: usize) -> usize
-where
-    T: Hash,
-{
-    u64_to_usize(calculate_hash(t)) % shards
-}
-
 #[cfg(test)]
 mod tests {
-
-    use crate::store::meta::shard::Lookup;
 
     use super::*;
 
     use necronomicon::SharedImpl;
     use tempfile::tempdir;
 
-    const SHARD_COUNT: usize = 100;
+    const BLOCK_SIZE: usize = 0x1000;
+    const POOL_SIZE: usize = 0x1000;
+    const SHARDS: usize = 100;
+    const SHARD_LEN: u64 = 0x1000;
 
     #[test]
-    fn test_store() {
+    fn store_put_get_delete() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path().to_path_buf().to_str().unwrap().to_string();
-        let mut store =
-            Store::new(dir_path, PoolImpl::new(0x1000, 0x1000), SHARD_COUNT, 0x1000).unwrap();
+        let mut store = Store::new(
+            dir_path,
+            PoolImpl::new(BLOCK_SIZE, POOL_SIZE),
+            SHARDS,
+            SHARD_LEN,
+        )
+        .unwrap();
         let key = BinaryData::new(SharedImpl::test_new(b"kittens"));
 
         let prepare = store.prepare_put(key.clone()).unwrap();
@@ -116,13 +113,13 @@ mod tests {
         let location = put.lookup();
         put.commit().unwrap();
 
-        let get = Lookup::from(store.get(key.clone()).unwrap().unwrap());
-        assert_eq!(get, location);
+        let Get { lookup, .. } = store.get(key.clone()).unwrap().unwrap();
+        assert_eq!(lookup, location);
 
         let mut delete = store.delete(key.clone()).unwrap().unwrap();
         delete.commit().unwrap();
         assert_eq!(location, delete.lookup());
 
-        assert_eq!(store.get(key).unwrap(), None);
+        assert!(store.get(key).unwrap().is_none());
     }
 }

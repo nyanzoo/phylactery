@@ -204,9 +204,9 @@ impl Deque {
     }
 
     fn push_back(&mut self) {
-        self.location.move_forward();
         let node = DequeNode::new(&self.location, self.node_size, self.version);
         self.deque.push_back((node, None));
+        self.location.move_forward();
     }
 
     pub(crate) fn compact(
@@ -271,9 +271,8 @@ impl Deque {
     where
         O: Owned,
     {
-        let file = OpenOptions::new()
-            .read(true)
-            .open(format!("{}/{}.bin", self.dir, file))?;
+        let path = format!("{}/{:08x}.bin", self.dir, file);
+        let file = OpenOptions::new().read(true).open(path)?;
         let mut buf_reader = BufReader::new(file);
 
         let meta = Metadata::decode(&mut buf_reader)?;
@@ -301,7 +300,7 @@ mod test {
     use super::Deque;
 
     #[test]
-    fn test_deque() {
+    fn deque() {
         let dir = tempfile::tempdir().unwrap();
         let mut deque = Deque::new(
             dir.path().to_str().unwrap().to_owned(),
@@ -337,7 +336,7 @@ mod test {
     }
 
     #[test]
-    fn test_deque_multiple() {
+    fn deque_multiple() {
         let dir = tempfile::tempdir().unwrap();
         let mut deque = Deque::new(
             dir.path().to_str().unwrap().to_owned(),
@@ -364,18 +363,19 @@ mod test {
     }
 
     #[test]
-    fn test_deque_multiple_nodes() {
+    fn deque_multiple_nodes() {
         let dir = tempfile::tempdir().unwrap();
         let mut deque = Deque::new(
             dir.path().to_str().unwrap().to_owned(),
             1024,
-            8192,
+            8192 * 1024,
             Version::V1,
         )
         .unwrap();
 
+        let now = std::time::Instant::now();
         let mut flushes = vec![];
-        for i in 0..100 {
+        for i in 0..100_000 {
             let push = deque
                 .push(&format!("hello kitties {i}").as_bytes())
                 .unwrap();
@@ -394,7 +394,7 @@ mod test {
 
         let pool = PoolImpl::new(1024, 1024);
         // Because we read from the node in mem we also need to know to skip the backing buffer as well...
-        for i in 0..100 {
+        for i in 0..100_000 {
             let expected = format!("hello kitties {i}");
             let mut buf = pool.acquire("pop");
             let pop = deque.pop(&mut buf).unwrap().unwrap();
@@ -403,10 +403,12 @@ mod test {
                 expected
             );
         }
+        let elapsed = now.elapsed();
+        println!("100,000 nodes in {:?}", elapsed);
     }
 
     #[test]
-    fn test_deque_empty() {
+    fn deque_empty() {
         let dir = tempfile::tempdir().unwrap();
         let mut deque = Deque::new(
             dir.path().to_str().unwrap().to_owned(),

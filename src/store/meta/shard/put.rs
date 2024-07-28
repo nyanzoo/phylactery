@@ -7,13 +7,12 @@ use crate::{
         shard::{Error, Lookup, Shard},
         Metadata, MetadataWithKey,
     },
-    u64_to_usize, usize_to_u64,
 };
 
 pub(crate) struct PreparePut {
-    lookup: Lookup,
-    meta_size: u64,
-    hash: u64,
+    pub lookup: Lookup,
+    pub meta_size: usize,
+    pub hash: u64,
 }
 
 pub(crate) struct Put {
@@ -45,18 +44,16 @@ impl Shard {
         // We must start with compacting and only change to `Full`
         // if we succeed in writing the data.
         let meta = MetadataWithKey::new(Metadata::tombstone(), key.clone());
-
+        // println!("cursor {} & size {}", self.cursor, meta.size());
         // ignore the flush, we will do that at the end of a store transaction(s).
-        let _ = self
-            .buffer
-            .encode_at(u64_to_usize(self.cursor), meta.size(), &meta)?;
+        let _ = self.buffer.encode_at(self.cursor, meta.size(), &meta)?;
 
         Ok(PreparePut {
             lookup: Lookup {
-                file: self.shard,
+                shard: self.shard,
                 offset: self.cursor,
             },
-            meta_size: usize_to_u64(meta.size()),
+            meta_size: meta.size(),
             hash: calculate_hash(&key),
         })
     }
@@ -74,13 +71,13 @@ impl Shard {
             hash,
         } = prepare;
         assert_eq!(lookup.offset, self.cursor);
-        assert_eq!(lookup.file, self.shard);
+        assert_eq!(lookup.shard, self.shard);
 
         let metadata = Metadata::new(file, offset, len);
-
-        let flush =
-            self.buffer
-                .encode_at(u64_to_usize(lookup.offset), Metadata::size(), &metadata)?;
+        // println!("off {} & size {}", lookup.offset, Metadata::size());
+        let flush = self
+            .buffer
+            .encode_at(lookup.offset, Metadata::size(), &metadata)?;
 
         self.cursor += meta_size;
         self.entries.entry(hash).or_default().push_back(lookup);

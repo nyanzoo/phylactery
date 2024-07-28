@@ -15,11 +15,11 @@ impl Location {
     }
 
     pub fn path(&self) -> PathBuf {
-        PathBuf::from(self.dir.as_ref()).join(format!("{:016x}.bin", self.file))
+        PathBuf::from(self.dir.as_ref()).join(format!("{:08x}.bin", self.file))
     }
 
     pub fn tombstone_path(&self) -> PathBuf {
-        PathBuf::from(self.dir.as_ref()).join(format!("{:016x}.tombstone", self.file))
+        PathBuf::from(self.dir.as_ref()).join(format!("{:08x}.tombstone", self.file))
     }
 
     pub fn move_forward(&mut self) {

@@ -148,7 +148,7 @@ mod test {
     }
 
     #[test]
-    fn test_push_pop() {
+    fn push_pop() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir = dir.path().join(TEST_DIR);
         std::fs::create_dir_all(dir.clone()).unwrap();
@@ -173,7 +173,7 @@ mod test {
     }
 
     #[test]
-    fn test_push_node_full() {
+    fn push_node_full() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir = dir.path().join(TEST_DIR);
         std::fs::create_dir_all(dir.clone()).unwrap();
@@ -186,7 +186,7 @@ mod test {
     }
 
     #[test]
-    fn test_push_entry_too_large() {
+    fn push_entry_too_large() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir = dir.path().join(TEST_DIR);
         std::fs::create_dir_all(dir.clone()).unwrap();

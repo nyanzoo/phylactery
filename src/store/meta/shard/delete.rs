@@ -11,7 +11,6 @@ use crate::{
         },
         MetaState,
     },
-    u64_to_usize,
 };
 
 pub(crate) struct Delete {
@@ -48,17 +47,15 @@ impl Shard {
             let mut res = None;
             let mut remove = None;
             for (i, lookup) in lookups.iter().enumerate() {
-                let meta: Metadata = self
-                    .buffer
-                    .decode_at(u64_to_usize(lookup.offset), Metadata::size())?;
+                let meta: Metadata = self.buffer.decode_at(lookup.offset, Metadata::size())?;
                 // we can skip over all the metadata that are already tombstones.
                 if meta.state == MetaState::Compacting {
                     continue;
                 }
 
-                let start = lookup.offset + Metadata::size() as u64;
-                let state_offset = u64_to_usize(lookup.offset) + Metadata::state_offset();
-                let start = u64_to_usize(start);
+                let start = lookup.offset + Metadata::size();
+                let state_offset = lookup.offset + Metadata::state_offset();
+                let start = start;
                 let mut owned = pool.acquire(BufferOwner::Delete);
                 let decoded_key = decode_key(&self.buffer, start, &mut owned)?;
 
@@ -68,7 +65,7 @@ impl Shard {
 
                     let tombstone = Tombstone {
                         len,
-                        offset: u64_to_usize(lookup.offset),
+                        offset: lookup.offset,
                     };
 
                     self.tombstones.push(tombstone);
@@ -79,7 +76,7 @@ impl Shard {
 
                     res = Some(Delete {
                         lookup: Lookup {
-                            file: self.shard,
+                            shard: self.shard,
                             offset: lookup.offset,
                         },
                         metadata: meta,

@@ -86,7 +86,7 @@ pub enum Push {
     Full,
 }
 
-pub(crate) struct File {
+pub struct File {
     pub(super) buffer: FileBuffer,
     pub(super) read: usize,
     pub(super) write: usize,
@@ -236,15 +236,6 @@ mod test {
 
     use super::*;
 
-    #[derive(Copy, Clone, Debug)]
-    struct TestBufferOwner;
-
-    impl BufferOwner for TestBufferOwner {
-        fn why(&self) -> &'static str {
-            "test always succeeds"
-        }
-    }
-
     #[test]
     fn test_peek_read_write() {
         let dir = tempdir().unwrap();
@@ -299,7 +290,7 @@ mod test {
 
         {
             let pool = PoolImpl::new(1024, 1024);
-            let mut peek = file.peek(pool, TestBufferOwner);
+            let mut peek = file.peek(pool, "test");
 
             assert_eq!(
                 peek.next()
@@ -346,7 +337,7 @@ mod test {
 
         {
             let pool = PoolImpl::new(1024, 1024);
-            let mut owned = pool.acquire(TestBufferOwner);
+            let mut owned = pool.acquire("test");
             let Pop::Entry(pop) = file.pop(&mut owned).unwrap() else {
                 panic!("expected entry");
             };
@@ -362,7 +353,7 @@ mod test {
 
         {
             let pool = PoolImpl::new(1024, 1024);
-            let mut peek = file.peek(pool, TestBufferOwner);
+            let mut peek = file.peek(pool, "test");
 
             assert_eq!(
                 peek.next()
@@ -391,7 +382,7 @@ mod test {
 
         {
             let pool = PoolImpl::new(1024, 1024);
-            let mut owned = pool.acquire(TestBufferOwner);
+            let mut owned = pool.acquire("test");
             let Pop::Entry(pop) = file.pop(&mut owned).unwrap() else {
                 panic!("expected entry");
             };

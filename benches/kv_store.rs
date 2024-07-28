@@ -3,10 +3,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use necronomicon::{binary_data, Pool, PoolImpl, Shared};
 use phylactery::{
     entry::Version,
-    kv_store::{
-        config::{self, Config},
-        create_store_and_graveyard, Lookup,
-    },
+    store::config::{self, Config},
 };
 
 pub fn put_get_delete(c: &mut Criterion) {
@@ -30,12 +27,7 @@ pub fn put_get_delete(c: &mut Criterion) {
 
     let pool = PoolImpl::new(1024, 1024);
 
-    let (mut store, graveyard) =
-        create_store_and_graveyard(config, 1024 * 1024).expect("create store failed");
-
-    let _ = std::thread::spawn(move || {
-        graveyard.bury(1);
-    });
+    let mut store = Store::new(path, pool, 100, 0x4000).expect("create store failed");
 
     for i in (1u32..=10).into_iter().map(|i| 2u64.pow(i)) {
         group.bench_with_input(BenchmarkId::new("pgd", i), &i, |b, _i| {
