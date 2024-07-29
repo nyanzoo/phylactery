@@ -40,7 +40,7 @@ impl Store {
     pub fn compact(
         &mut self,
         shard: usize,
-        ranges_to_delete: BTreeMap<Location, Vec<Range<usize>>>,
+        ranges_to_delete: &BTreeMap<Location, Vec<Range<usize>>>,
     ) -> Result<(), Error> {
         self.shards[shard]
             .compact(ranges_to_delete)

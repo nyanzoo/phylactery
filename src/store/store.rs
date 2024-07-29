@@ -15,8 +15,15 @@ use super::{
     cache::LRU,
     data::store::Store as DataStore,
     error::Error,
-    graveyard::graveyard::Graveyard,
-    meta::{self, shard, store::Store as MetaDataStore},
+    graveyard::{
+        graveyard::{Compaction, Graveyard},
+        tombstone::Tombstone,
+    },
+    meta::{
+        self,
+        shard::{self, delete::Delete},
+        store::Store as MetaDataStore,
+    },
 };
 
 pub struct Put {
@@ -41,10 +48,10 @@ impl Store {
         meta_pool: PoolImpl,
     ) -> Result<Self, Error> {
         let meta = MetaDataStore::new(dir.clone(), meta_pool, shards, meta_shard_len)?;
-        let data = DataStore::new(dir, shards, data_shard_len, max_disk_usage)?;
+        let data = DataStore::new(dir.clone(), shards, data_shard_len, max_disk_usage)?;
         let mut graveyards = Vec::new();
         for _ in 0..shards {
-            graveyards.push(Graveyard::new(max_disk_usage));
+            graveyards.push(Graveyard::new(dir.clone().into(), max_disk_usage));
         }
 
         Ok(Self {
@@ -55,32 +62,31 @@ impl Store {
         })
     }
 
-    // pub fn delete(&mut self, key: BinaryData<SharedImpl>) -> Result<(), Error> {
-    //     if let Some(Delete {
-    //         lookup,
-    //         metadata,
-    //         flush,
-    //     }) = self.meta.delete(key)?
-    //     {
-    //         let tomb = Tombstone {
-    //             crc: metadata.crc,
-    //             file: metadata.file,
-    //             offset: metadata.offset,
-    //             len: metadata.len,
-    //         };
+    pub fn delete(&mut self, key: BinaryData<SharedImpl>) -> Result<Option<Delete>, Error> {
+        if let Some(delete) = self.meta.delete(key)? {
+            let lookup = delete.lookup();
+            let metadata = delete.metadata();
+            let tomb = Tombstone {
+                crc: metadata.crc,
+                file: metadata.file,
+                offset: metadata.offset,
+                len: metadata.len,
+            };
 
-    //         let shard = usize::try_from(lookup.file).expect("u64 -> usize");
-    //         let graveyard = &mut self.graveyards[shard];
-    //         graveyard.bury(tomb);
-    //         if graveyard.should_compact() {
-    //             let compaction = graveyard.compact();
-    //             self.data.compact()?;
-    //             self.meta.compact(&compaction.shards().collect::<Vec<_>>())?;
-    //         }
-    //     }
+            let graveyard = &mut self.graveyards[lookup.shard];
+            graveyard.bury(tomb);
+            if graveyard.should_compact() {
+                let compaction = graveyard.compact();
+                self.data
+                    .compact(lookup.shard, compaction.file_to_tombs())?;
+                self.meta.compact(compaction.shards())?;
+            }
 
-    //     Ok(())
-    // }
+            Ok(Some(delete))
+        } else {
+            Ok(None)
+        }
+    }
 
     pub fn get(
         &mut self,

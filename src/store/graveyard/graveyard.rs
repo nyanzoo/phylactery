@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range, path::PathBuf, rc::Rc};
+
+use crate::{deque::Location, u64_to_usize};
 
 use super::tombstone::Tombstone;
 
@@ -6,6 +8,7 @@ pub struct Graveyard {
     tombs: Vec<Tombstone>,
     max_disk_usage: u64,
     amount_dead: u64,
+    dir: Rc<PathBuf>,
 }
 
 // Store will need to be something like an event loop anyway
@@ -33,21 +36,26 @@ pub struct CopyRange {
 }
 
 pub struct Compaction {
-    file_to_tombs: BTreeMap<u64, Vec<Tombstone>>,
+    file_to_tombs: BTreeMap<Location, Vec<Range<usize>>>,
 }
 
 impl Compaction {
-    fn shards(&self) -> impl Iterator<Item = &u64> {
-        self.file_to_tombs.keys()
+    pub fn shards(&self) -> impl Iterator<Item = usize> + '_ {
+        self.file_to_tombs.keys().map(|l| u64_to_usize(l.file))
+    }
+
+    pub fn file_to_tombs(&self) -> &BTreeMap<Location, Vec<Range<usize>>> {
+        &self.file_to_tombs
     }
 }
 
 impl Graveyard {
-    pub(crate) fn new(max_disk_usage: u64) -> Self {
+    pub(crate) fn new(dir: PathBuf, max_disk_usage: u64) -> Self {
         Self {
             tombs: vec![],
             max_disk_usage,
             amount_dead: 0,
+            dir: Rc::new(dir),
         }
     }
 
@@ -65,7 +73,10 @@ impl Graveyard {
 
         // map the tombstones to the files
         Compaction {
-            file_to_tombs: map_tombs_to_files(reduce_tombs(std::mem::take(tombs))),
+            file_to_tombs: map_tombs_to_files(
+                self.dir.clone(),
+                reduce_tombs(std::mem::take(tombs)),
+            ),
         }
     }
 }
@@ -105,13 +116,24 @@ fn reduce_tombs_for_file(tombs: &mut Vec<Tombstone>) -> Vec<Tombstone> {
     reduction
 }
 
-fn map_tombs_to_files(mut reduction: Vec<Tombstone>) -> BTreeMap<u64, Vec<Tombstone>> {
+fn map_tombs_to_files(
+    dir: Rc<PathBuf>,
+    mut reduction: Vec<Tombstone>,
+) -> BTreeMap<Location, Vec<Range<usize>>> {
     let mut tomb_map = BTreeMap::new();
     for tomb in reduction.drain(..) {
+        let location = Location {
+            dir: dir.clone(),
+            file: tomb.file,
+        };
+        let range = Range {
+            start: tomb.offset as usize,
+            end: (tomb.offset + tomb.len) as usize,
+        };
         tomb_map
-            .entry(tomb.file)
+            .entry(location)
             .or_insert_with(Vec::new)
-            .push(tomb);
+            .push(range);
     }
     tomb_map
 }
@@ -162,17 +184,20 @@ mod test {
     #[test]
     fn test_map_tombs_to_files() {
         let mut expected = BTreeMap::new();
-        expected.insert(0, vec![test_tomb(0, 0, 20), test_tomb(0, 40, 10)]);
-
-        expected.insert(1, vec![test_tomb(1, 30, 10), test_tomb(1, 50, 10)]);
+        let dir = PathBuf::from("/tmp");
+        expected.insert(Location::new(dir.clone(), 0), vec![0..20, 40..50]);
+        expected.insert(Location::new(dir.clone(), 1), vec![30..40, 50..60]);
 
         assert_eq!(
-            map_tombs_to_files(vec![
-                test_tomb(0, 0, 20),
-                test_tomb(0, 40, 10),
-                test_tomb(1, 30, 10),
-                test_tomb(1, 50, 10),
-            ]),
+            map_tombs_to_files(
+                Rc::new(dir),
+                vec![
+                    test_tomb(0, 0, 20),
+                    test_tomb(0, 40, 10),
+                    test_tomb(1, 30, 10),
+                    test_tomb(1, 50, 10),
+                ]
+            ),
             expected
         );
     }

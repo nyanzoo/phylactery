@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{create_dir_all, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom},
+    io::{BufReader, Seek, SeekFrom},
     ops::Range,
     path::Path,
 };
@@ -211,16 +211,16 @@ impl Deque {
 
     pub(crate) fn compact(
         &mut self,
-        ranges_to_delete: BTreeMap<Location, Vec<Range<usize>>>,
+        ranges_to_delete: &BTreeMap<Location, Vec<Range<usize>>>,
     ) -> Result<(), Error> {
         let mut remove_nodes = Vec::new();
 
-        for (location, ranges_to_delete) in ranges_to_delete.into_iter() {
+        for (location, ranges_to_delete) in ranges_to_delete {
             let (idx, (node, file)) = self
                 .deque
                 .iter()
                 .enumerate()
-                .find(|(_, (node, _))| *node.location() == location)
+                .find(|(_, (node, _))| *node.location() == *location)
                 .expect("file exists");
 
             let file = if let Some(file) = file {

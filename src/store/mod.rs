@@ -1,6 +1,12 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    sync::mpsc::{Receiver, Sender},
+};
 
-use necronomicon::{Decode, Encode};
+use hashring::HashRing;
+use necronomicon::{BinaryData, Decode, Encode, Pool as _, PoolImpl, SharedImpl};
+
+use crate::entry::Readable;
 
 mod cache;
 pub mod config;
@@ -12,6 +18,68 @@ mod error;
 mod meta;
 mod metadata;
 mod store;
+
+pub enum Request {
+    Delete {
+        key: BinaryData<SharedImpl>,
+    },
+    Get {
+        key: BinaryData<SharedImpl>,
+    },
+    Put {
+        key: BinaryData<SharedImpl>,
+        value: BinaryData<SharedImpl>,
+    },
+}
+
+pub enum Response {
+    Delete {
+        result: Result<Option<meta::shard::delete::Delete>, error::Error>,
+    },
+    Get {
+        result: Result<Option<Readable<SharedImpl>>, error::Error>,
+    },
+    Put {
+        result: Result<Option<store::Put>, error::Error>,
+    },
+}
+
+pub struct Store {
+    stores: Vec<store::Store>,
+    requests: Receiver<Request>,
+    responses: Sender<Response>,
+    hasher: HashRing<usize>,
+}
+
+impl Store {
+    pub fn run(mut self, pool: PoolImpl) -> ! {
+        loop {
+            match self.requests.recv() {
+                Ok(Request::Delete { key }) => {
+                    let store = self.hasher.get(&key).copied().expect("no stores");
+                    let store = &mut self.stores[store];
+                    let result = store.delete(key);
+                    self.responses.send(Response::Delete { result }).unwrap();
+                }
+                Ok(Request::Get { key }) => {
+                    let store = self.hasher.get(&key).copied().expect("no stores");
+                    let store = &mut self.stores[store];
+                    let mut owned = pool.acquire(BufferOwner::Get);
+                    let result = store.get(key, &mut owned);
+                    self.responses.send(Response::Get { result }).unwrap();
+                }
+                Ok(Request::Put { key, value }) => {
+                    let store = self.hasher.get(&key).copied().expect("no stores");
+                    let store = &mut self.stores[store];
+                    let result = store.put(key, value);
+                    self.responses.send(Response::Put { result }).unwrap();
+                }
+                Err(_) => break,
+            }
+        }
+        std::process::exit(0);
+    }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub(crate) enum MetaState {
@@ -255,26 +323,6 @@ mod test {
             .unwrap();
     }
 }
-
-// pub fn create_store_and_graveyard(
-//     config: Config,
-//     graveyard_buffer_size: u64,
-// ) -> Result<(Store, Graveyard), Error> {
-//     trace!(
-//         "creating store at {}, res {:?}",
-//         config.path,
-//         std::fs::create_dir_all(&config.path)?
-//     );
-
-//     let graveyard_path = format!("{}/graveyard", config.path);
-//     trace!("creating mmap buffer at {}", graveyard_path);
-
-//     let (pusher, popper) = dequeue(graveyard_path, 1024, graveyard_buffer_size, config.version)?;
-//     let graveyard = Graveyard::new(config.path.clone().into(), popper);
-//     let store = Store::new(config, pusher)?;
-
-//     Ok((store, graveyard))
-// }
 
 #[allow(dead_code)]
 #[cfg(test)]

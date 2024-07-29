@@ -70,9 +70,9 @@ impl Shard {
 
                     self.tombstones.push(tombstone);
 
-                    let flushable =
-                        self.buffer
-                            .encode_at(state_offset, 1, &MetaState::Compacting)?;
+                    let flush = self
+                        .buffer
+                        .encode_at(state_offset, 1, &MetaState::Compacting)?;
 
                     res = Some(Delete {
                         lookup: Lookup {
@@ -80,7 +80,7 @@ impl Shard {
                             offset: lookup.offset,
                         },
                         metadata: meta,
-                        flush: flushable,
+                        flush,
                     });
                     remove = Some(i);
                 }

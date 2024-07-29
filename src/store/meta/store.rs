@@ -41,9 +41,9 @@ impl Store {
         })
     }
 
-    pub fn compact(&mut self, shards: &[usize]) -> Result<(), Error> {
+    pub fn compact(&mut self, shards: impl Iterator<Item = usize>) -> Result<(), Error> {
         for shard in shards {
-            let shard = &mut self.shards[*shard];
+            let shard = &mut self.shards[shard];
             shard.compact().map_err(Error::Shard)?;
         }
         Ok(())

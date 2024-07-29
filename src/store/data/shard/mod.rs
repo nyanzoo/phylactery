@@ -37,7 +37,7 @@ impl Shard {
 
     pub(super) fn compact(
         &mut self,
-        ranges_to_delete: BTreeMap<Location, Vec<Range<usize>>>,
+        ranges_to_delete: &BTreeMap<Location, Vec<Range<usize>>>,
     ) -> Result<(), Error> {
         self.deque.compact(ranges_to_delete).map_err(Error::Deque)
     }
