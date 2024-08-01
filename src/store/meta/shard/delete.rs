@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-pub(crate) struct Delete {
+pub struct Delete {
     lookup: Lookup,
     metadata: Metadata,
     flush: Flush<<MmapBuffer as Buffer>::Flushable>,

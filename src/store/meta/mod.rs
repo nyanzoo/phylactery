@@ -21,7 +21,7 @@ pub mod shard;
 pub mod store;
 
 #[derive(Copy, Clone, Debug)]
-pub(super) struct Metadata {
+pub(crate) struct Metadata {
     pub mask: u32,
     pub crc: u32,
     pub file: u64,

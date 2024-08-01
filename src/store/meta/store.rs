@@ -11,6 +11,14 @@ use crate::store::meta::{
     },
 };
 
+const REPLICA_COUNT: usize = 10;
+
+#[derive(Copy, Clone, Debug, Hash, PartialEq)]
+struct VNode {
+    shard: usize,
+    id: usize,
+}
+
 /// The metadata store. This manages all metadata pertaining to actual data entries.
 pub struct Store {
     /// The path to the metadata directory.
@@ -20,7 +28,7 @@ pub struct Store {
     /// A sharded set of files for storing metadata entries.
     shards: Vec<Shard>,
     /// hasher for calculating shard index
-    hasher: HashRing<usize>,
+    hasher: HashRing<VNode>,
 }
 
 impl Store {
@@ -29,7 +37,9 @@ impl Store {
         let mut shards_v = vec![];
         let mut hasher = HashRing::new();
         for shard in 0..shards {
-            hasher.add(shard);
+            for id in 0..REPLICA_COUNT {
+                hasher.add(VNode { shard, id });
+            }
             let shard = Shard::new(dir.clone(), shard, shard_len, &pool)?;
             shards_v.push(shard);
         }
@@ -50,19 +60,19 @@ impl Store {
     }
 
     pub fn delete(&mut self, key: BinaryData<SharedImpl>) -> Result<Option<Delete>, Error> {
-        let shard = self.hasher.get(&key).copied().expect("no shards");
+        let shard = self.hasher.get(&key).copied().expect("no shards").shard;
         let shard = &mut self.shards[shard];
         shard.delete(key, &self.pool).map_err(Error::Shard)
     }
 
     pub fn get(&mut self, key: BinaryData<SharedImpl>) -> Result<Option<Get>, Error> {
-        let shard = self.hasher.get(&key).copied().expect("no shards");
+        let shard = self.hasher.get(&key).copied().expect("no shards").shard;
         let shard = &mut self.shards[shard];
         shard.get(key, &self.pool).map_err(Error::Shard)
     }
 
     pub fn prepare_put(&mut self, key: BinaryData<SharedImpl>) -> Result<PreparePut, Error> {
-        let shard = self.hasher.get(&key).copied().expect("no shards");
+        let shard = self.hasher.get(&key).copied().expect("no shards").shard;
         let shard = &mut self.shards[shard];
         shard.prepare_put(key).map_err(Error::Shard)
     }
@@ -75,7 +85,7 @@ impl Store {
         offset: u64,
         len: u64,
     ) -> Result<Put, Error> {
-        let shard = self.hasher.get(&key).copied().expect("no shards");
+        let shard = self.hasher.get(&key).copied().expect("no shards").shard;
         let shard = &mut self.shards[shard];
         shard.put(prepare, file, offset, len).map_err(Error::Shard)
     }

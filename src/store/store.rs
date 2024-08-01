@@ -15,10 +15,7 @@ use super::{
     cache::LRU,
     data::store::Store as DataStore,
     error::Error,
-    graveyard::{
-        graveyard::{Compaction, Graveyard},
-        tombstone::Tombstone,
-    },
+    graveyard::{graveyard::Graveyard, tombstone::Tombstone},
     meta::{
         self,
         shard::{self, delete::Delete},
@@ -29,6 +26,19 @@ use super::{
 pub struct Put {
     data_flush: Flush<LazyWriteFileFlush>,
     meta: meta::shard::put::Put,
+}
+
+impl Put {
+    pub fn commit(mut self) -> Result<(), Error> {
+        self.meta
+            .prepare()
+            .map_err(crate::store::meta::Error::Shard)?;
+        self.data_flush.flush()?;
+        self.meta
+            .commit()
+            .map_err(crate::store::meta::Error::Shard)?;
+        Ok(())
+    }
 }
 
 pub struct Store {
@@ -182,7 +192,7 @@ mod test {
     #[test]
     fn store_put_get() {
         let dir = tempdir().unwrap();
-        let dir_path = dir.path().to_path_buf();
+        // let dir_path = dir.path().to_path_buf();
         let dir_path_str = dir.path().to_str().unwrap().to_string();
         let mut store = Store::new(
             dir_path_str,
