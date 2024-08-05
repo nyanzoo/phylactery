@@ -1,27 +1,33 @@
-use necronomicon::{BinaryData, OwnedImpl, PoolImpl, Shared, SharedImpl};
+use std::{collections::BTreeMap, iter::Peekable};
+
+use necronomicon::{BinaryData, ByteStr, OwnedImpl, PoolImpl, Shared, SharedImpl};
 
 use crate::{
     buffer::{Flush, LazyWriteFileFlush},
-    deque::Push,
+    deque::{Deque, Push},
     entry::{
         v1::{self},
-        Readable,
+        Readable, Version,
     },
     store::MetaState,
     MASK,
 };
 
 use super::{
-    cache::LRU,
+    cache::Lru,
     data::store::Store as DataStore,
     error::Error,
-    graveyard::{graveyard::Graveyard, tombstone::Tombstone},
+    graveyard::{tombstone::Tombstone, Graveyard},
     meta::{
         self,
         shard::{self, delete::Delete},
         store::Store as MetaDataStore,
     },
+    BufferOwner,
 };
+
+type DequeIter<'a> = Box<dyn Iterator<Item = Result<Readable<SharedImpl>, Error>> + 'a>;
+type DequePeekIter<'a> = Peekable<DequeIter<'a>>;
 
 pub struct Put {
     data_flush: Flush<LazyWriteFileFlush>,
@@ -41,14 +47,15 @@ impl Put {
     }
 }
 
-pub struct Store {
+pub struct Store<'a> {
     meta: MetaDataStore,
     data: DataStore,
+    deques: BTreeMap<ByteStr<SharedImpl>, (Deque, Option<DequePeekIter<'a>>)>,
     graveyards: Vec<Graveyard>,
-    cache: LRU<BinaryData<SharedImpl>, BinaryData<SharedImpl>>,
+    cache: Lru<BinaryData<SharedImpl>, BinaryData<SharedImpl>>,
 }
 
-impl Store {
+impl<'a> Store<'a> {
     pub fn new(
         dir: String,
         shards: usize,
@@ -64,12 +71,129 @@ impl Store {
             graveyards.push(Graveyard::new(dir.clone().into(), max_disk_usage));
         }
 
+        // TODO: read back the deques for recovery
+        let deques = BTreeMap::new();
+
         Ok(Self {
             meta,
             data,
+            deques,
             graveyards,
-            cache: LRU::new(30_000),
+            cache: Lru::new(30_000),
         })
+    }
+
+    pub fn create_deque(
+        &mut self,
+        dir: ByteStr<SharedImpl>,
+        node_size: u64,
+        max_disk_usage: u64,
+    ) -> Result<(), Error> {
+        if self.deques.contains_key(&dir) {
+            return Err(Error::DequeExists(
+                dir.as_str().map(|s| s.to_string()).expect("valid string"),
+            ));
+        }
+        let deque = Deque::new(
+            dir.as_str().map(|s| s.to_string()).expect("valid string"),
+            node_size,
+            max_disk_usage,
+            Version::V1,
+        )?;
+        assert!(self.deques.insert(dir, (deque, None)).is_none());
+        Ok(())
+    }
+
+    pub fn delete_deque(&mut self, dir: ByteStr<SharedImpl>) -> Result<(), Error> {
+        if self.deques.remove(&dir).is_some() {
+            std::fs::remove_dir(dir.as_str().map(|s| s.to_string()).expect("valid string"))?;
+            Ok(())
+        } else {
+            Err(Error::DequeNotFound(
+                dir.as_str().map(|s| s.to_string()).expect("valid string"),
+            ))
+        }
+    }
+
+    pub fn push_back(
+        &mut self,
+        dir: ByteStr<SharedImpl>,
+        value: BinaryData<SharedImpl>,
+    ) -> Result<(), Error> {
+        let (deque, _) = self.deques.get_mut(&dir).ok_or_else(|| {
+            Error::DequeNotFound(dir.as_str().map(|s| s.to_string()).expect("valid string"))
+        })?;
+        deque.push(value.data().as_slice())?;
+        Ok(())
+    }
+
+    pub fn pop_front(
+        &mut self,
+        dir: ByteStr<SharedImpl>,
+        buffer: &mut OwnedImpl,
+    ) -> Result<Option<Readable<SharedImpl>>, Error> {
+        let (deque, _) = self.deques.get_mut(&dir).ok_or_else(|| {
+            Error::DequeNotFound(dir.as_str().map(|s| s.to_string()).expect("valid string"))
+        })?;
+        deque.pop(buffer).map_err(Error::Deque)
+    }
+
+    pub fn peek(
+        &'a mut self,
+        dir: ByteStr<SharedImpl>,
+        pool: &'static PoolImpl,
+    ) -> Result<Option<Readable<SharedImpl>>, Box<dyn std::error::Error + 'a>> {
+        let (deque, itr) = self.deques.get_mut(&dir).ok_or_else(|| {
+            Error::DequeNotFound(dir.as_str().map(|s| s.to_string()).expect("valid string"))
+        })?;
+
+        if deque.is_empty() {
+            return Ok(None);
+        }
+
+        if itr.is_none() {
+            let peekable: DequeIter = Box::new(
+                deque
+                    .peek()
+                    .map(|(node, file)| {
+                        if let Some(file) = file.as_ref().cloned() {
+                            Ok(file)
+                        } else {
+                            node.read().map_err(Error::Deque)
+                        }
+                    })
+                    .flat_map(|file| match file {
+                        Ok(file) => {
+                            let peek = file.peek(pool.clone(), BufferOwner::Peek).map(|entry| {
+                                entry.map(|entry| entry.data.clone()).map_err(Error::Deque)
+                            });
+                            Ok(peek)
+                        }
+                        Err(e) => Err(e),
+                    })
+                    .flatten(),
+            ) as _;
+            let peekable = peekable.peekable();
+
+            _ = itr.insert(peekable);
+        }
+
+        if let Some(itr) = itr {
+            let peek = itr
+                .peek()
+                .map(|result| match result {
+                    Ok(x) => Ok(x.clone()),
+                    Err(e) => Err(e),
+                })
+                .transpose();
+
+            match peek {
+                Ok(value) => Ok(value),
+                Err(e) => Err(Box::new(e) as _),
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn delete(&mut self, key: BinaryData<SharedImpl>) -> Result<Option<Delete>, Error> {
@@ -104,7 +228,7 @@ impl Store {
         buffer: &mut OwnedImpl,
     ) -> Result<Option<Readable<SharedImpl>>, Error> {
         if let Some(value) = self.cache.get(&key) {
-            let data = Readable::new(crate::entry::Version::V1, value.clone());
+            let data = Readable::new(Version::V1, value.clone());
             return Ok(Some(data));
         }
         if let Some(shard::get::Get { lookup, metadata }) = self.meta.get(key.clone())? {
@@ -121,13 +245,9 @@ impl Store {
                 return Ok(None);
             }
 
-            let data = self.data.get(
-                lookup.shard,
-                file,
-                offset,
-                buffer,
-                crate::entry::Version::V1,
-            )?;
+            let data = self
+                .data
+                .get(lookup.shard, file, offset, buffer, Version::V1)?;
 
             Ok(Some(data))
         } else {

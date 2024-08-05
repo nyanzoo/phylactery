@@ -39,7 +39,6 @@ impl Shard {
                 let meta: Metadata = self.buffer.decode_at(lookup.offset, Metadata::size())?;
 
                 let start = lookup.offset + Metadata::size();
-                let start = usize::try_from(start).expect("u64 to usize");
                 let decoded_key = decode_key(&self.buffer, start, &mut owned)?;
 
                 if decoded_key == key {

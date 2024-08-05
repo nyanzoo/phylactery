@@ -22,7 +22,7 @@ mod location;
 pub(crate) use location::Location;
 
 use self::file::{File, Remaining};
-pub(crate) use self::file::{Pop, Push};
+pub use self::file::{Pop, Push};
 
 mod node;
 
@@ -94,6 +94,10 @@ impl Deque {
             location,
             dir,
         })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.deque.is_empty()
     }
 
     pub fn peek(&self) -> impl Iterator<Item = &(DequeNode, Option<File>)> {
@@ -246,12 +250,12 @@ impl Deque {
 
                 if running_range.end as u64 == size && running_range.start == 0 {
                     node.delete()?;
-                    self.disk_usage -= size as u64;
+                    self.disk_usage -= size;
                     remove_nodes.push(idx);
                 }
             }
 
-            node.compact(&ranges_to_delete)?;
+            node.compact(ranges_to_delete)?;
         }
 
         for idx in remove_nodes.into_iter().rev() {

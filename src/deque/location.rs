@@ -1,7 +1,7 @@
 use std::{path::PathBuf, rc::Rc};
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct Location {
+pub struct Location {
     pub dir: Rc<PathBuf>,
     pub file: u64,
 }

@@ -2,7 +2,7 @@
 A FIFO persisted collection, which can grow as needed and should require little to no compaction.
 
 ## Design
-At a high-level there are two layers to the dequeue implementation. First is an in-memory buffer (a node in the dequeue) for reads and writes to be performant at the cost of copying data when it comes to permanent data residence and potential data loss if crash before flush. Second is a series of files that are the permanent locations of data and managed at the dequeue level (above node).
+At a high-level there are two layers to the deque implementation. First is an in-memory buffer (a node in the deque) for reads and writes to be performant at the cost of copying data when it comes to permanent data residence and potential data loss if crash before flush. Second is a series of files that are the permanent locations of data and managed at the deque level (above node).
 
 The file layout on disk will look something like this:
 ```

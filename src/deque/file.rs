@@ -29,20 +29,20 @@ where
     pub size: usize,
 }
 
-pub(crate) struct Peek<'a, P, O>
+pub(crate) struct Peek<P, O>
 where
     P: Pool,
     O: BufferOwner,
 {
     read: usize,
     write: usize,
-    buffer: &'a FileBuffer,
+    buffer: FileBuffer,
     version: Version,
     pool: P,
     owner: O,
 }
 
-impl<'a, P, O> Iterator for Peek<'a, P, O>
+impl<'a, P, O> Iterator for Peek<P, O>
 where
     P: Pool,
     O: BufferOwner,
@@ -55,7 +55,7 @@ where
         }
 
         let mut buf = self.pool.acquire(self.owner);
-        let entry = read_entry(self.buffer, self.read, self.version, &mut buf);
+        let entry = read_entry(self.buffer.clone(), self.read, self.version, &mut buf);
 
         if let Ok(Entry { size, .. }) = entry {
             self.read += size;
@@ -66,7 +66,7 @@ where
 }
 
 #[derive(Debug)]
-pub(crate) enum Pop<S>
+pub enum Pop<S>
 where
     S: Shared,
 {
@@ -86,6 +86,7 @@ pub enum Push {
     Full,
 }
 
+#[derive(Clone)]
 pub struct File {
     pub(super) buffer: FileBuffer,
     pub(super) read: usize,
@@ -106,7 +107,7 @@ impl Debug for File {
 }
 
 impl File {
-    pub(crate) fn peek<P, O>(&self, pool: P, owner: O) -> Peek<'_, P, O>
+    pub(crate) fn peek<P, O>(&self, pool: P, owner: O) -> Peek<P, O>
     where
         P: Pool,
         O: BufferOwner,
@@ -114,7 +115,7 @@ impl File {
         Peek {
             read: self.read,
             write: self.write,
-            buffer: &self.buffer,
+            buffer: self.buffer.clone(),
             version: self.version,
             pool,
             owner,
@@ -129,7 +130,7 @@ impl File {
             return Ok(Pop::WaitForFlush);
         }
 
-        let entry = read_entry(&self.buffer, self.read, self.version, buf)?;
+        let entry = read_entry(self.buffer.clone(), self.read, self.version, buf)?;
 
         self.read += entry.size;
 
@@ -163,7 +164,7 @@ impl File {
         // ignore the flush result, we'll handle it later with the data flush.
         _ = self.buffer.encode_at(
             write_ptr as usize,
-            Metadata::struct_size(self.version) as usize,
+            Metadata::struct_size(self.version),
             &metadata,
         )?;
 
@@ -197,14 +198,14 @@ impl File {
 
     pub(crate) fn remaining(&self) -> Remaining {
         Remaining {
-            space_to_write: self.buffer.capacity() as u64 - (self.write - self.read) as u64,
+            space_to_write: self.buffer.capacity() - (self.write - self.read) as u64,
             space_to_read: (self.write - self.read) as u64,
         }
     }
 }
 
 fn read_entry<O>(
-    buffer: &FileBuffer,
+    buffer: FileBuffer,
     read: usize,
     version: Version,
     buf: &mut O,
@@ -212,7 +213,7 @@ fn read_entry<O>(
 where
     O: Owned,
 {
-    let metadata_len = Metadata::struct_size(version) as usize;
+    let metadata_len = Metadata::struct_size(version);
     let metadata: Metadata = buffer.decode_at(read, metadata_len)?;
     metadata.verify()?;
 

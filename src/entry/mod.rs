@@ -58,13 +58,12 @@ where
         let mut metas = vec![];
         while (off as u64 + Metadata::struct_size(version) as u64) < buffer.capacity() {
             // read the metadata.
-            if let Ok(metadata) =
-                buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize)
+            if let Ok(metadata) = buffer.decode_at::<Metadata>(off, Metadata::struct_size(version))
             {
                 metas.push(metadata);
 
                 // increment the offset by the size of the metadata.
-                off += Metadata::struct_size(version) as usize;
+                off += Metadata::struct_size(version);
                 // increment the offset by the size of the data.
                 off += metadata.data_size() as usize;
             } else {

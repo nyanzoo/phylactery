@@ -1,12 +1,12 @@
-use std::hash::{Hash as _, Hasher as _};
-
 use necronomicon::{BinaryData, Shared};
 
 use crate::{
-    buffer::{Buffer, Flush, MmapBuffer}, calculate_hash, store::meta::{
+    buffer::{Buffer, Flush, MmapBuffer},
+    calculate_hash,
+    store::meta::{
         shard::{Error, Lookup, Shard},
         Metadata, MetadataWithKey,
-    }
+    },
 };
 
 pub(crate) struct PreparePut {

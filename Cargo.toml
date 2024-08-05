@@ -43,7 +43,7 @@ name = "ring_buffer"
 harness = false
 
 [[bench]]
-name = "dequeue"
+name = "deque"
 harness = false
 
 [[bench]]

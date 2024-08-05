@@ -291,7 +291,7 @@ where
     T: AsRef<[u8]> + AsMut<[u8]>,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Ok(0);
         }
 
@@ -339,7 +339,7 @@ where
     T: AsRef<[u8]> + AsMut<[u8]>,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Ok(0);
         }
 

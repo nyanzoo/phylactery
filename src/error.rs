@@ -27,8 +27,8 @@ pub enum Error {
     #[error("invalid buffer size: {0} must be >= {1} and a multiple of {1}")]
     InvalidBufferSize(u32, u32),
 
-    #[error("trying to initialize dequeue with smaller capacity ({capacity}) than the current one ({current_capacity})")]
-    InvalidDequeueCapacity {
+    #[error("trying to initialize deque with smaller capacity ({capacity}) than the current one ({current_capacity})")]
+    InvalidDequeCapacity {
         capacity: u64,
         current_capacity: u64,
     },

@@ -2,11 +2,11 @@ use std::hash::Hash;
 
 use hashlink::LruCache;
 
-pub(super) struct LRU<K, V> {
+pub(super) struct Lru<K, V> {
     inner: LruCache<K, V>,
 }
 
-impl<K, V> LRU<K, V>
+impl<K, V> Lru<K, V>
 where
     K: Clone + Eq + Hash,
 {

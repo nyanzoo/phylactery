@@ -55,13 +55,11 @@ impl Shard {
 
                 let start = lookup.offset + Metadata::size();
                 let state_offset = lookup.offset + Metadata::state_offset();
-                let start = start;
                 let mut owned = pool.acquire(BufferOwner::Delete);
                 let decoded_key = decode_key(&self.buffer, start, &mut owned)?;
 
                 if decoded_key == key {
-                    let len = usize::try_from(decoded_key.len()).expect("u64 to usize")
-                        + Metadata::size();
+                    let len = decoded_key.len() + Metadata::size();
 
                     let tombstone = Tombstone {
                         len,

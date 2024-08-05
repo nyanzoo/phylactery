@@ -20,7 +20,7 @@ pub enum Error {
     #[error("entry larger than node {0} > {1}")]
     EntryLargerThanNode(u64, u64),
 
-    #[error("trying to initialize dequeue with smaller capacity ({capacity}) than the current one ({current_capacity})")]
+    #[error("trying to initialize deque with smaller capacity ({capacity}) than the current one ({current_capacity})")]
     InvalidDequeCapacity {
         capacity: u64,
         current_capacity: u64,

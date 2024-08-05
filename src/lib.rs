@@ -10,7 +10,6 @@ pub mod entry;
 mod error;
 pub use error::Error;
 
-pub mod scheduler;
 pub mod store;
 
 pub const BAD_MASK: u32 = 0xDEAD_BEA7; // deadbeat

@@ -1,16 +1,13 @@
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    sync::{
-        mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc,
-    },
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread::JoinHandle,
 };
 
 use hashring::HashRing;
 use log::error;
-use necronomicon::{BinaryData, Decode, Encode, Pool as _, PoolImpl, SharedImpl};
+use necronomicon::{BinaryData, ByteStr, Decode, Encode, Pool as _, PoolImpl, SharedImpl};
 
 use crate::entry::Readable;
 
@@ -43,7 +40,30 @@ pub struct Config {
     pub capacity: usize,
 }
 
+#[derive(Clone)]
 pub enum Request {
+    // Deque
+    Create {
+        dir: ByteStr<SharedImpl>,
+        node_size: u64,
+        max_disk_usage: u64,
+    },
+    Remove {
+        dir: ByteStr<SharedImpl>,
+    },
+    Push {
+        dir: ByteStr<SharedImpl>,
+        value: BinaryData<SharedImpl>,
+    },
+    Pop {
+        dir: ByteStr<SharedImpl>,
+    },
+    Peek {
+        dir: ByteStr<SharedImpl>,
+        sequence: u64,
+    },
+
+    // Store
     Delete {
         key: BinaryData<SharedImpl>,
     },
@@ -57,26 +77,62 @@ pub enum Request {
 }
 
 pub enum InnerResponse {
+    // Deque
+    Create {
+        result: Result<(), necronomicon::Response<SharedImpl>>,
+    },
+    Remove {
+        result: Result<(), necronomicon::Response<SharedImpl>>,
+    },
+    Push {
+        result: Result<(), necronomicon::Response<SharedImpl>>,
+    },
+    Pop {
+        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
+    },
+    Peek {
+        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
+    },
+
+    // Store
     Delete {
-        result: Result<Option<meta::shard::delete::Delete>, error::Error>,
+        result: Result<Option<meta::shard::delete::Delete>, necronomicon::Response<SharedImpl>>,
     },
     Get {
-        result: Result<Option<Readable<SharedImpl>>, error::Error>,
+        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
     },
     Put {
-        result: Result<Option<store::Put>, error::Error>,
+        result: Result<Option<store::Put>, necronomicon::Response<SharedImpl>>,
     },
 }
 
 pub enum Response {
+    // Deque
+    Create {
+        result: Result<(), necronomicon::Response<SharedImpl>>,
+    },
+    Remove {
+        result: Result<(), necronomicon::Response<SharedImpl>>,
+    },
+    Push {
+        result: Result<(), necronomicon::Response<SharedImpl>>,
+    },
+    Pop {
+        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
+    },
+    Peek {
+        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
+    },
+
+    // Store
     Delete {
-        result: Result<bool, String>,
+        result: Result<bool, necronomicon::Response<SharedImpl>>,
     },
     Get {
-        result: Result<Option<Readable<SharedImpl>>, String>,
+        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
     },
     Put {
-        result: Result<bool, String>,
+        result: Result<bool, necronomicon::Response<SharedImpl>>,
     },
 }
 
@@ -114,30 +170,30 @@ impl Store {
     pub fn run(mut self) {
         loop {
             match self.requests.try_recv() {
-                Ok(Request::Delete { key }) => {
-                    let store = self.hasher.get(&key).copied().expect("no stores").shard;
-                    let store = &mut self.stores[store];
-                    store
-                        .requests
-                        .send(Request::Delete { key })
-                        .expect("send request");
+                Ok(ref request) => {
+                    let store = match request {
+                        // Deque
+                        Request::Create { dir, .. }
+                        | Request::Remove { dir }
+                        | Request::Push { dir, .. }
+                        | Request::Pop { dir }
+                        | Request::Peek { dir, .. } => {
+                            let store = self.hasher.get(&dir).copied().expect("no stores").shard;
+                            &mut self.stores[store]
+                        }
+                        // Store
+                        Request::Delete { key }
+                        | Request::Get { key }
+                        | Request::Put { key, .. } => {
+                            let store = self.hasher.get(&key).copied().expect("no stores").shard;
+                            &mut self.stores[store]
+                        }
+                    };
+
+                    store.requests.send(request.clone()).expect("send request");
                 }
-                Ok(Request::Get { key }) => {
-                    let store = self.hasher.get(&key).copied().expect("no stores").shard;
-                    let store = &mut self.stores[store];
-                    store
-                        .requests
-                        .send(Request::Get { key })
-                        .expect("send request");
-                }
-                Ok(Request::Put { key, value }) => {
-                    let store = self.hasher.get(&key).copied().expect("no stores").shard;
-                    let store = &mut self.stores[store];
-                    store
-                        .requests
-                        .send(Request::Put { key, value })
-                        .expect("send request");
-                }
+
+                // Errors
                 Err(TryRecvError::Disconnected) => {
                     error!("store disconnected");
                     return;
@@ -206,25 +262,131 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                 max_disk_usage,
                 pool,
             )
-            .expect(&format!("failed to create store at {:?}", dir))
+            .unwrap_or_else(|_| panic!("failed to create store at {:?}", dir))
         };
 
+        // TODO: make constants?
+        // We can use a small pool for errors and should be fine?
+        let err_pool = PoolImpl::new(128, 1024);
+
         let mut responses = VecDeque::new();
+        let store = &mut store;
         loop {
             match requests_rx.try_recv() {
+                // Deque
+                Ok(Request::Create {
+                    dir,
+                    node_size,
+                    max_disk_usage,
+                }) => {
+                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let result =
+                        store
+                            .create_deque(dir, node_size, max_disk_usage)
+                            .map_err(|err| necronomicon::Response {
+                                code: necronomicon::INTERNAL_ERROR,
+                                reason: Some(
+                                    ByteStr::from_owned(err.to_string(), &mut owned)
+                                        .expect("err reason"),
+                                ),
+                            });
+                    responses.push_back(InnerResponse::Create { result });
+                }
+                Ok(Request::Remove { dir }) => {
+                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let result = store
+                        .delete_deque(dir)
+                        .map_err(|err| necronomicon::Response {
+                            code: necronomicon::INTERNAL_ERROR,
+                            reason: Some(
+                                ByteStr::from_owned(err.to_string(), &mut owned)
+                                    .expect("err reason"),
+                            ),
+                        });
+
+                    responses.push_back(InnerResponse::Remove { result });
+                }
+                Ok(Request::Push { dir, value }) => {
+                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let result =
+                        store
+                            .push_back(dir, value)
+                            .map_err(|err| necronomicon::Response {
+                                code: necronomicon::INTERNAL_ERROR,
+                                reason: Some(
+                                    ByteStr::from_owned(err.to_string(), &mut owned)
+                                        .expect("err reason"),
+                                ),
+                            });
+                    responses.push_back(InnerResponse::Push { result });
+                }
+                Ok(Request::Pop { dir }) => {
+                    let mut owned = pool.acquire(BufferOwner::PopFront);
+                    let mut owned_err = err_pool.acquire(BufferOwner::Error);
+                    let result =
+                        store
+                            .pop_front(dir, &mut owned)
+                            .map_err(|err| necronomicon::Response {
+                                code: necronomicon::INTERNAL_ERROR,
+                                reason: Some(
+                                    ByteStr::from_owned(err.to_string(), &mut owned_err)
+                                        .expect("err reason"),
+                                ),
+                            });
+                    responses.push_back(InnerResponse::Pop { result });
+                }
+                Ok(Request::Peek { .. }) => {
+                    unimplemented!("peek")
+                    // let mut owned = err_pool.acquire(BufferOwner::Error);
+                    // let result = store
+                    //     .peek(dir, &pool)
+                    //     .map_err(|err| necronomicon::Response {
+                    //         code: necronomicon::INTERNAL_ERROR,
+                    //         reason: Some(
+                    //             ByteStr::from_owned(err.to_string(), &mut owned)
+                    //                 .expect("err reason"),
+                    //         ),
+                    //     });
+                    // responses.push_back(InnerResponse::Peek { result });
+                }
+
+                // Store
                 Ok(Request::Delete { key }) => {
-                    let result = store.delete(key);
+                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let result = store.delete(key).map_err(|err| necronomicon::Response {
+                        code: necronomicon::INTERNAL_ERROR,
+                        reason: Some(
+                            ByteStr::from_owned(err.to_string(), &mut owned).expect("err reason"),
+                        ),
+                    });
                     responses.push_back(InnerResponse::Delete { result });
                 }
                 Ok(Request::Get { key }) => {
                     let mut owned = pool.acquire(BufferOwner::Get);
-                    let result = store.get(key, &mut owned);
+                    let mut owned_err = err_pool.acquire(BufferOwner::Error);
+                    let result = store
+                        .get(key, &mut owned)
+                        .map_err(|err| necronomicon::Response {
+                            code: necronomicon::INTERNAL_ERROR,
+                            reason: Some(
+                                ByteStr::from_owned(err.to_string(), &mut owned_err)
+                                    .expect("err reason"),
+                            ),
+                        });
                     responses.push_back(InnerResponse::Get { result });
                 }
                 Ok(Request::Put { key, value }) => {
-                    let result = store.put(key, value);
+                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let result = store.put(key, value).map_err(|err| necronomicon::Response {
+                        code: necronomicon::INTERNAL_ERROR,
+                        reason: Some(
+                            ByteStr::from_owned(err.to_string(), &mut owned).expect("err reason"),
+                        ),
+                    });
                     responses.push_back(InnerResponse::Put { result });
                 }
+
+                // Errors
                 Err(TryRecvError::Disconnected) => {
                     error!("store at {:?} disconnected", dir);
                     return;
@@ -232,6 +394,48 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                 Err(TryRecvError::Empty) => {
                     for mut response in responses.drain(..) {
                         match &mut response {
+                            // Deque
+                            InnerResponse::Create { result } => {
+                                responses_tx
+                                    .send(Response::Create {
+                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
+                                    })
+                                    .expect("send response");
+                            }
+
+                            InnerResponse::Remove { result } => {
+                                responses_tx
+                                    .send(Response::Remove {
+                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
+                                    })
+                                    .expect("send response");
+                            }
+
+                            InnerResponse::Push { result } => {
+                                responses_tx
+                                    .send(Response::Push {
+                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
+                                    })
+                                    .expect("send response");
+                            }
+
+                            InnerResponse::Pop { result } => {
+                                responses_tx
+                                    .send(Response::Pop {
+                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
+                                    })
+                                    .expect("send response");
+                            }
+
+                            InnerResponse::Peek { result } => {
+                                responses_tx
+                                    .send(Response::Peek {
+                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
+                                    })
+                                    .expect("send response");
+                            }
+
+                            // Store
                             InnerResponse::Delete { result } => {
                                 if let Ok(Some(delete)) = result {
                                     delete.commit().expect("failed to commit");
@@ -242,7 +446,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                                         result: result
                                             .as_ref()
                                             .map(|x| x.is_some())
-                                            .map_err(|e| e.to_string()),
+                                            .map_err(|e| e.clone()),
                                     })
                                     .expect("send response");
                             }
@@ -250,7 +454,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                                 let result = match result {
                                     Ok(Some(readable)) => Ok(Some(readable.clone())),
                                     Ok(None) => Ok(None),
-                                    Err(e) => Err(e.to_string()),
+                                    Err(e) => Err(e.clone()),
                                 };
 
                                 responses_tx
@@ -267,7 +471,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                                             Ok(false)
                                         }
                                     }
-                                    Err(e) => Err(e.to_string()),
+                                    Err(e) => Err(e.clone()),
                                 };
 
                                 responses_tx
@@ -561,7 +765,6 @@ pub fn hexyl(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use necronomicon::Pool;
     use tempfile::tempdir;
 
     use super::*;

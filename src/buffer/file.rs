@@ -22,16 +22,17 @@ impl Flushable for LazyWriteFileFlush {
 }
 
 // TODO: need to read file on create and then can just write to file on flush
+#[derive(Clone)]
 pub struct FileBuffer(Rc<RefCell<InnerFile>>);
 
 impl FileBuffer {
-    #[must_use]
     pub fn new(size: u64, file: PathBuf) -> std::io::Result<Self> {
         let buffer = vec![0; size as usize];
         {
             std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&file)?;
         }
         let inner = InnerFile::new(LazyWriteFile(buffer, file));
