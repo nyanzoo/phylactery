@@ -18,6 +18,7 @@ mod graveyard;
 
 mod data;
 mod error;
+pub use error::Error;
 mod meta;
 mod metadata;
 mod store;
