@@ -30,6 +30,7 @@ struct VNode {
     id: usize,
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Config {
     pub dir: String,
     pub shards: usize,
