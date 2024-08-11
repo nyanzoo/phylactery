@@ -12,7 +12,6 @@ use necronomicon::{BinaryData, ByteStr, Decode, Encode, Pool as _, PoolImpl, Sha
 use crate::entry::Readable;
 
 mod cache;
-pub mod config;
 
 mod graveyard;
 
