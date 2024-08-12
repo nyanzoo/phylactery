@@ -10,6 +10,7 @@ name = "phylactery"
 
 [dependencies]
 crc32fast = "1"
+crossbeam = "0.8"
 hashlink = "0.9"
 hashring = "0.3"
 libc = "0.2"

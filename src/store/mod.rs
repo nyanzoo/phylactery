@@ -1,10 +1,10 @@
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread::JoinHandle,
 };
 
+use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use hashring::HashRing;
 use log::error;
 use necronomicon::{BinaryData, ByteStr, Decode, Encode, Pool as _, PoolImpl, SharedImpl};
@@ -240,8 +240,8 @@ struct StoreLoop {
 }
 
 fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
-    let (requests_tx, requests_rx) = channel();
-    let (responses_tx, responses_rx) = channel();
+    let (requests_tx, requests_rx) = unbounded();
+    let (responses_tx, responses_rx) = unbounded();
     let handle = std::thread::spawn(move || {
         let Config {
             dir,
