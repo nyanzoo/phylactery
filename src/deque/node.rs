@@ -58,7 +58,7 @@ impl DequeNode {
         })
     }
 
-    pub(crate) fn read(&self) -> Result<File,Error> {
+    pub(crate) fn read(&self) -> Result<File, Error> {
         let Self {
             location,
             buffer_size,
@@ -160,7 +160,7 @@ mod test {
             write,
             location: other_location,
             version,
-        } = other.open().unwrap();
+        } = other.read().unwrap();
 
         assert_eq!(other_location, location);
         assert_eq!(buffer.capacity(), 128);

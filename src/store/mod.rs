@@ -7,9 +7,14 @@ use std::{
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use hashring::HashRing;
 use log::error;
-use necronomicon::{BinaryData, ByteStr, Decode, Encode, Pool as _, PoolImpl, SharedImpl};
-
-use crate::entry::Readable;
+use necronomicon::{
+    deque_codec::{
+        Create, CreateAck, Delete as DequeDelete, DeleteAck as DequeDeleteAck, Dequeue, DequeueAck,
+        Enqueue, EnqueueAck, Peek, PeekAck,
+    },
+    kv_store_codec::{Delete, DeleteAck, Get, GetAck, Put, PutAck},
+    ByteStr, Decode, Encode, Pool as _, PoolImpl, SharedImpl, KEY_DOES_NOT_EXIST, QUEUE_EMPTY,
+};
 
 mod cache;
 
@@ -44,97 +49,30 @@ pub struct Config {
 #[derive(Clone)]
 pub enum Request {
     // Deque
-    Create {
-        dir: ByteStr<SharedImpl>,
-        node_size: u64,
-        max_disk_usage: u64,
-    },
-    Remove {
-        dir: ByteStr<SharedImpl>,
-    },
-    Push {
-        dir: ByteStr<SharedImpl>,
-        value: BinaryData<SharedImpl>,
-    },
-    Pop {
-        dir: ByteStr<SharedImpl>,
-    },
-    Peek {
-        dir: ByteStr<SharedImpl>,
-        sequence: u64,
-    },
+    Create(Create<SharedImpl>),
+    Remove(DequeDelete<SharedImpl>),
+    Push(Enqueue<SharedImpl>),
+    Pop(Dequeue<SharedImpl>),
+    Peek(Peek<SharedImpl>),
 
     // Store
-    Delete {
-        key: BinaryData<SharedImpl>,
-    },
-    Get {
-        key: BinaryData<SharedImpl>,
-    },
-    Put {
-        key: BinaryData<SharedImpl>,
-        value: BinaryData<SharedImpl>,
-    },
-}
-
-pub enum InnerResponse {
-    // Deque
-    Create {
-        result: Result<(), necronomicon::Response<SharedImpl>>,
-    },
-    Remove {
-        result: Result<(), necronomicon::Response<SharedImpl>>,
-    },
-    Push {
-        result: Result<(), necronomicon::Response<SharedImpl>>,
-    },
-    Pop {
-        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
-    },
-    Peek {
-        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
-    },
-
-    // Store
-    Delete {
-        result: Result<Option<meta::shard::delete::Delete>, necronomicon::Response<SharedImpl>>,
-    },
-    Get {
-        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
-    },
-    Put {
-        result: Result<Option<store::Put>, necronomicon::Response<SharedImpl>>,
-    },
+    Delete(Delete<SharedImpl>),
+    Get(Get<SharedImpl>),
+    Put(Put<SharedImpl>),
 }
 
 pub enum Response {
     // Deque
-    Create {
-        result: Result<(), necronomicon::Response<SharedImpl>>,
-    },
-    Remove {
-        result: Result<(), necronomicon::Response<SharedImpl>>,
-    },
-    Push {
-        result: Result<(), necronomicon::Response<SharedImpl>>,
-    },
-    Pop {
-        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
-    },
-    Peek {
-        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
-    },
+    Create(CreateAck<SharedImpl>),
+    Remove(DequeDeleteAck<SharedImpl>),
+    Push(EnqueueAck<SharedImpl>),
+    Pop(DequeueAck<SharedImpl>),
+    Peek(PeekAck<SharedImpl>),
 
     // Store
-    Delete {
-        result: Result<bool, necronomicon::Response<SharedImpl>>,
-    },
-    Get {
-        result: Result<Option<Readable<SharedImpl>>, necronomicon::Response<SharedImpl>>,
-    },
-    Put {
-        result: Result<bool, necronomicon::Response<SharedImpl>>,
-    },
+    Delete(DeleteAck<SharedImpl>),
+    Get(GetAck<SharedImpl>),
+    Put(PutAck<SharedImpl>),
 }
 
 pub struct Store {
@@ -174,19 +112,77 @@ impl Store {
                 Ok(ref request) => {
                     let store = match request {
                         // Deque
-                        Request::Create { dir, .. }
-                        | Request::Remove { dir }
-                        | Request::Push { dir, .. }
-                        | Request::Pop { dir }
-                        | Request::Peek { dir, .. } => {
-                            let store = self.hasher.get(&dir).copied().expect("no stores").shard;
+                        Request::Create(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.path())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
+                            &mut self.stores[store]
+                        }
+                        Request::Remove(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.path())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
+                            &mut self.stores[store]
+                        }
+                        Request::Push(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.path())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
+                            &mut self.stores[store]
+                        }
+                        Request::Pop(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.path())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
+                            &mut self.stores[store]
+                        }
+                        Request::Peek(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.path())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
                             &mut self.stores[store]
                         }
                         // Store
-                        Request::Delete { key }
-                        | Request::Get { key }
-                        | Request::Put { key, .. } => {
-                            let store = self.hasher.get(&key).copied().expect("no stores").shard;
+                        Request::Delete(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.key())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
+                            &mut self.stores[store]
+                        }
+                        Request::Get(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.key())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
+                            &mut self.stores[store]
+                        }
+                        Request::Put(request) => {
+                            let store = self
+                                .hasher
+                                .get(request.key())
+                                .copied()
+                                .expect("no stores")
+                                .shard;
                             &mut self.stores[store]
                         }
                     };
@@ -275,28 +271,14 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
         loop {
             match requests_rx.try_recv() {
                 // Deque
-                Ok(Request::Create {
-                    dir,
-                    node_size,
-                    max_disk_usage,
-                }) => {
-                    let mut owned = err_pool.acquire(BufferOwner::Error);
-                    let result =
-                        store
-                            .create_deque(dir, node_size, max_disk_usage)
-                            .map_err(|err| necronomicon::Response {
-                                code: necronomicon::INTERNAL_ERROR,
-                                reason: Some(
-                                    ByteStr::from_owned(err.to_string(), &mut owned)
-                                        .expect("err reason"),
-                                ),
-                            });
-                    responses.push_back(InnerResponse::Create { result });
-                }
-                Ok(Request::Remove { dir }) => {
+                Ok(Request::Create(request)) => {
                     let mut owned = err_pool.acquire(BufferOwner::Error);
                     let result = store
-                        .delete_deque(dir)
+                        .create_deque(
+                            request.path().clone(),
+                            request.node_size(),
+                            request.max_disk_usage(),
+                        )
                         .map_err(|err| necronomicon::Response {
                             code: necronomicon::INTERNAL_ERROR,
                             reason: Some(
@@ -304,29 +286,52 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                                     .expect("err reason"),
                             ),
                         });
-
-                    responses.push_back(InnerResponse::Remove { result });
+                    let ack = match result {
+                        Ok(_) => request.ack(),
+                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                    };
+                    responses.push_back(Response::Create(ack));
                 }
-                Ok(Request::Push { dir, value }) => {
+                Ok(Request::Remove(request)) => {
                     let mut owned = err_pool.acquire(BufferOwner::Error);
-                    let result =
-                        store
-                            .push_back(dir, value)
-                            .map_err(|err| necronomicon::Response {
-                                code: necronomicon::INTERNAL_ERROR,
-                                reason: Some(
-                                    ByteStr::from_owned(err.to_string(), &mut owned)
-                                        .expect("err reason"),
-                                ),
-                            });
-                    responses.push_back(InnerResponse::Push { result });
+                    let result = store.delete_deque(request.path().clone()).map_err(|err| {
+                        necronomicon::Response {
+                            code: necronomicon::INTERNAL_ERROR,
+                            reason: Some(
+                                ByteStr::from_owned(err.to_string(), &mut owned)
+                                    .expect("err reason"),
+                            ),
+                        }
+                    });
+                    let ack = match result {
+                        Ok(_) => request.ack(),
+                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                    };
+                    responses.push_back(Response::Remove(ack));
                 }
-                Ok(Request::Pop { dir }) => {
+                Ok(Request::Push(request)) => {
+                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let result = store
+                        .push_back(request.path().clone(), request.value().clone())
+                        .map_err(|err| necronomicon::Response {
+                            code: necronomicon::INTERNAL_ERROR,
+                            reason: Some(
+                                ByteStr::from_owned(err.to_string(), &mut owned)
+                                    .expect("err reason"),
+                            ),
+                        });
+                    let ack = match result {
+                        Ok(_) => request.ack(),
+                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                    };
+                    responses.push_back(Response::Push(ack));
+                }
+                Ok(Request::Pop(request)) => {
                     let mut owned = pool.acquire(BufferOwner::PopFront);
                     let mut owned_err = err_pool.acquire(BufferOwner::Error);
                     let result =
                         store
-                            .pop_front(dir, &mut owned)
+                            .pop_front(request.path().clone(), &mut owned)
                             .map_err(|err| necronomicon::Response {
                                 code: necronomicon::INTERNAL_ERROR,
                                 reason: Some(
@@ -334,7 +339,14 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                                         .expect("err reason"),
                                 ),
                             });
-                    responses.push_back(InnerResponse::Pop { result });
+                    let ack = match result {
+                        Ok(value) => match value {
+                            Some(value) => request.ack(value.into_inner()),
+                            None => request.nack(QUEUE_EMPTY, None),
+                        },
+                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                    };
+                    responses.push_back(Response::Pop(ack));
                 }
                 Ok(Request::Peek { .. }) => {
                     unimplemented!("peek")
@@ -348,43 +360,65 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     //                 .expect("err reason"),
                     //         ),
                     //     });
-                    // responses.push_back(InnerResponse::Peek { result });
+                    // responses.push_back(Response::Peek { result });
                 }
 
                 // Store
-                Ok(Request::Delete { key }) => {
+                Ok(Request::Delete(request)) => {
                     let mut owned = err_pool.acquire(BufferOwner::Error);
-                    let result = store.delete(key).map_err(|err| necronomicon::Response {
-                        code: necronomicon::INTERNAL_ERROR,
-                        reason: Some(
-                            ByteStr::from_owned(err.to_string(), &mut owned).expect("err reason"),
-                        ),
-                    });
-                    responses.push_back(InnerResponse::Delete { result });
+                    let result =
+                        store
+                            .delete(request.key().clone())
+                            .map_err(|err| necronomicon::Response {
+                                code: necronomicon::INTERNAL_ERROR,
+                                reason: Some(
+                                    ByteStr::from_owned(err.to_string(), &mut owned)
+                                        .expect("err reason"),
+                                ),
+                            });
+                    let ack = match result {
+                        Ok(_) => request.ack(),
+                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                    };
+                    responses.push_back(Response::Delete(ack));
                 }
-                Ok(Request::Get { key }) => {
+                Ok(Request::Get(request)) => {
                     let mut owned = pool.acquire(BufferOwner::Get);
                     let mut owned_err = err_pool.acquire(BufferOwner::Error);
-                    let result = store
-                        .get(key, &mut owned)
-                        .map_err(|err| necronomicon::Response {
+                    let result = store.get(request.key().clone(), &mut owned).map_err(|err| {
+                        necronomicon::Response {
                             code: necronomicon::INTERNAL_ERROR,
                             reason: Some(
                                 ByteStr::from_owned(err.to_string(), &mut owned_err)
                                     .expect("err reason"),
                             ),
-                        });
-                    responses.push_back(InnerResponse::Get { result });
-                }
-                Ok(Request::Put { key, value }) => {
-                    let mut owned = err_pool.acquire(BufferOwner::Error);
-                    let result = store.put(key, value).map_err(|err| necronomicon::Response {
-                        code: necronomicon::INTERNAL_ERROR,
-                        reason: Some(
-                            ByteStr::from_owned(err.to_string(), &mut owned).expect("err reason"),
-                        ),
+                        }
                     });
-                    responses.push_back(InnerResponse::Put { result });
+                    let ack = match result {
+                        Ok(value) => match value {
+                            Some(value) => request.ack(value.into_inner()),
+                            None => request.nack(KEY_DOES_NOT_EXIST, None),
+                        },
+                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                    };
+                    responses.push_back(Response::Get(ack));
+                }
+                Ok(Request::Put(request)) => {
+                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let result = store
+                        .put(request.key().clone(), request.value().clone())
+                        .map_err(|err| necronomicon::Response {
+                            code: necronomicon::INTERNAL_ERROR,
+                            reason: Some(
+                                ByteStr::from_owned(err.to_string(), &mut owned)
+                                    .expect("err reason"),
+                            ),
+                        });
+                    let ack = match result {
+                        Ok(_) => request.ack(),
+                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                    };
+                    responses.push_back(Response::Put(ack));
                 }
 
                 // Errors
@@ -393,93 +427,8 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     return;
                 }
                 Err(TryRecvError::Empty) => {
-                    for mut response in responses.drain(..) {
-                        match &mut response {
-                            // Deque
-                            InnerResponse::Create { result } => {
-                                responses_tx
-                                    .send(Response::Create {
-                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
-                                    })
-                                    .expect("send response");
-                            }
-
-                            InnerResponse::Remove { result } => {
-                                responses_tx
-                                    .send(Response::Remove {
-                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
-                                    })
-                                    .expect("send response");
-                            }
-
-                            InnerResponse::Push { result } => {
-                                responses_tx
-                                    .send(Response::Push {
-                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
-                                    })
-                                    .expect("send response");
-                            }
-
-                            InnerResponse::Pop { result } => {
-                                responses_tx
-                                    .send(Response::Pop {
-                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
-                                    })
-                                    .expect("send response");
-                            }
-
-                            InnerResponse::Peek { result } => {
-                                responses_tx
-                                    .send(Response::Peek {
-                                        result: result.as_ref().map_err(|e| e.clone()).cloned(),
-                                    })
-                                    .expect("send response");
-                            }
-
-                            // Store
-                            InnerResponse::Delete { result } => {
-                                if let Ok(Some(delete)) = result {
-                                    delete.commit().expect("failed to commit");
-                                }
-
-                                responses_tx
-                                    .send(Response::Delete {
-                                        result: result
-                                            .as_ref()
-                                            .map(|x| x.is_some())
-                                            .map_err(|e| e.clone()),
-                                    })
-                                    .expect("send response");
-                            }
-                            InnerResponse::Get { result } => {
-                                let result = match result {
-                                    Ok(Some(readable)) => Ok(Some(readable.clone())),
-                                    Ok(None) => Ok(None),
-                                    Err(e) => Err(e.clone()),
-                                };
-
-                                responses_tx
-                                    .send(Response::Get { result })
-                                    .expect("send response");
-                            }
-                            InnerResponse::Put { result } => {
-                                let result = match result {
-                                    Ok(maybe) => {
-                                        if let Some(put) = maybe.take() {
-                                            put.commit().expect("failed to commit");
-                                            Ok(true)
-                                        } else {
-                                            Ok(false)
-                                        }
-                                    }
-                                    Err(e) => Err(e.clone()),
-                                };
-
-                                responses_tx
-                                    .send(Response::Put { result })
-                                    .expect("send response");
-                            }
-                        }
+                    for response in responses.drain(..) {
+                        responses_tx.send(response).expect("send response");
                     }
                 }
             }
@@ -766,6 +715,8 @@ pub fn hexyl(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
+    use crossbeam::channel::bounded;
+    use necronomicon::{Ack, BinaryData, SUCCESS};
     use tempfile::tempdir;
 
     use super::*;
@@ -814,8 +765,8 @@ mod tests {
                 capacity: 0x1000,
             },
         ];
-        let (requests_tx, requests_rx) = std::sync::mpsc::channel();
-        let (responses_tx, responses_rx) = std::sync::mpsc::channel();
+        let (requests_tx, requests_rx) = bounded(1024);
+        let (responses_tx, responses_rx) = bounded(1024);
 
         let handle = std::thread::spawn(move || {
             let store = Store::new(
@@ -832,15 +783,16 @@ mod tests {
         for i in 0..100_000 {
             let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
             let value = BinaryData::new(SharedImpl::test_new(format!("value-{}", i).as_bytes()));
-            requests_tx.send(Request::Put { key, value }).unwrap();
+            requests_tx
+                .send(Request::Put(Put::new(1, 1, key, value)))
+                .unwrap();
         }
 
         let responses = responses_rx.iter().take(100_000);
         for response in responses {
             match response {
-                Response::Put { result } => {
-                    assert!(result.is_ok());
-                    assert!(result.unwrap());
+                Response::Put(ack) => {
+                    assert!(ack.response().code() == SUCCESS);
                 }
                 _ => panic!("unexpected response"),
             }
@@ -854,13 +806,13 @@ mod tests {
         let now = std::time::Instant::now();
         for i in random_range {
             let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
-            requests_tx.send(Request::Get { key }).unwrap();
+            requests_tx.send(Request::Get(Get::new(1, 1, key))).unwrap();
         }
 
         for response in responses_rx.iter().take(100_000) {
             match response {
-                Response::Get { result } => {
-                    let data = result.unwrap().unwrap();
+                Response::Get(ack) => {
+                    assert!(ack.response().code() == SUCCESS);
                     // assert_eq!(
                     //     data.into_inner().data().as_slice(),
                     //     format!("value-{}", i).as_bytes()
