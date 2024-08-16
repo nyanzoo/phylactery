@@ -64,6 +64,8 @@ impl<'a> Store<'a> {
         max_disk_usage: u64,
         meta_pool: PoolImpl,
     ) -> Result<Self, Error> {
+        // Make sure dir exists
+        std::fs::create_dir_all(&dir)?;
         let meta = MetaDataStore::new(dir.clone(), meta_pool, shards, meta_shard_len)?;
         let data = DataStore::new(dir.clone(), shards, data_shard_len, max_disk_usage)?;
         let mut graveyards = Vec::new();
