@@ -8,6 +8,6 @@ pub enum Error {
     #[error("necronomicon error: {0}")]
     Necronomicon(#[from] necronomicon::Error),
 
-    #[error("shard error: {0}")]
+    #[error("meta shard error: {0}")]
     Shard(#[from] shard::Error),
 }
