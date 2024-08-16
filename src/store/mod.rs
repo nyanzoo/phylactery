@@ -259,7 +259,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                 max_disk_usage,
                 pool,
             )
-            .unwrap_or_else(|_| panic!("failed to create store at {:?}", dir))
+            .unwrap_or_else(|err| panic!("failed to create store at {:?} due to {err}", dir))
         };
 
         // TODO: make constants?
