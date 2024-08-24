@@ -13,7 +13,8 @@ use necronomicon::{
         Enqueue, EnqueueAck, Peek, PeekAck,
     },
     kv_store_codec::{Delete, DeleteAck, Get, GetAck, Put, PutAck},
-    ByteStr, Decode, Encode, Pool as _, PoolImpl, SharedImpl, KEY_DOES_NOT_EXIST, QUEUE_EMPTY,
+    Ack, ByteStr, Decode, Encode, Header, Pool as _, PoolImpl, SharedImpl, KEY_DOES_NOT_EXIST,
+    QUEUE_EMPTY,
 };
 
 mod cache;
@@ -73,6 +74,40 @@ pub enum Response {
     Delete(DeleteAck<SharedImpl>),
     Get(GetAck<SharedImpl>),
     Put(PutAck<SharedImpl>),
+}
+
+impl Ack<SharedImpl> for Response {
+    fn header(&self) -> &Header {
+        match self {
+            // Deque
+            Response::Create(response) => response.header(),
+            Response::Remove(response) => response.header(),
+            Response::Push(response) => response.header(),
+            Response::Pop(response) => response.header(),
+            Response::Peek(response) => response.header(),
+
+            // Store
+            Response::Delete(response) => response.header(),
+            Response::Get(response) => response.header(),
+            Response::Put(response) => response.header(),
+        }
+    }
+
+    fn response(&self) -> necronomicon::Response<SharedImpl> {
+        match self {
+            // Deque
+            Response::Create(response) => response.response(),
+            Response::Remove(response) => response.response(),
+            Response::Push(response) => response.response(),
+            Response::Pop(response) => response.response(),
+            Response::Peek(response) => response.response(),
+
+            // Store
+            Response::Delete(response) => response.response(),
+            Response::Get(response) => response.response(),
+            Response::Put(response) => response.response(),
+        }
+    }
 }
 
 pub struct Store {
