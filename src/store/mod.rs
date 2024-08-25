@@ -304,6 +304,13 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
         let mut responses = VecDeque::new();
         let store = &mut store;
         loop {
+            // TODO: maybe handle error responses more gracefully?
+            //       for now we will just go to a limit and then send them out.
+            if responses.len() > 100 {
+                for response in responses.drain(..) {
+                    responses_tx.send(response).expect("send response");
+                }
+            }
             match requests_rx.try_recv() {
                 // Deque
                 Ok(Request::Create(request)) => {
