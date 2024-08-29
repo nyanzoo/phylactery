@@ -47,7 +47,7 @@ pub struct Config {
     pub capacity: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Request {
     // Deque
     Create(Create<SharedImpl>),
@@ -62,6 +62,7 @@ pub enum Request {
     Put(Put<SharedImpl>),
 }
 
+#[derive(Clone, Debug)]
 pub enum Response {
     // Deque
     Create(CreateAck<SharedImpl>),
