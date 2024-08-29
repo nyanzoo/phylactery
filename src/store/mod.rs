@@ -6,7 +6,7 @@ use std::{
 
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use hashring::HashRing;
-use log::error;
+use log::{error, trace};
 use necronomicon::{
     deque_codec::{
         Create, CreateAck, Delete as DequeDelete, DeleteAck as DequeDeleteAck, Dequeue, DequeueAck,
@@ -448,6 +448,8 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                 }
                 Ok(Request::Put(request)) => {
                     let mut owned = err_pool.acquire(BufferOwner::Error);
+                    // NOTE: double check the bytestr for the err. If it is good,
+                    // then it means that the decode error is from something else.
                     let result = store
                         .put(request.key().clone(), request.value().clone())
                         .map_err(|err| necronomicon::Response {
@@ -459,7 +461,10 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                         });
                     let ack = match result {
                         Ok(_) => request.ack(),
-                        Err(necronomicon::Response { code, reason }) => request.nack(code, reason),
+                        Err(necronomicon::Response { code, reason }) => {
+                            trace!("put nack: {} {:?}", code, reason);
+                            request.nack(code, reason)
+                        }
                     };
                     responses.push_back(Response::Put(ack));
                 }
