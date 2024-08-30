@@ -260,11 +260,11 @@ impl Store {
 
                         break 'response;
                     }
+
+                    // Sleep? or maybe just yield?
+                    std::thread::sleep(Duration::from_millis(10));
                 }
             }
-
-            // Sleep? or maybe just yield?
-            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -482,6 +482,9 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     for response in responses.drain(..) {
                         responses_tx.send(response).expect("send response");
                     }
+
+                    // Sleep? or something?
+                    std::thread::sleep(Duration::from_millis(10));
                 }
             }
         }
