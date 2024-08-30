@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     io::{Read, Write},
     thread::JoinHandle,
+    time::Duration,
 };
 
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
@@ -261,6 +262,9 @@ impl Store {
                     }
                 }
             }
+
+            // Sleep? or maybe just yield?
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
