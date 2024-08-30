@@ -50,10 +50,16 @@ impl Shard {
     {
         // We must start with compacting and only change to `Full`
         // if we succeed in writing the data.
-        let meta = MetadataWithKey::new(Metadata::tombstone(), key.clone());
         if self.cursor + Metadata::size() > self.buffer.capacity() as usize {
             return Err(Error::Full);
         }
+
+        let meta = MetadataWithKey::new(Metadata::tombstone(), key.clone());
+        // If we cannot fit the entire metadata in the buffer, we cannot proceed.
+        if self.cursor + meta.size() > self.buffer.capacity() as usize {
+            return Err(Error::Full);
+        }
+
         // println!("cursor {} & size {}", self.cursor, meta.size());
         // ignore the flush, we will do that at the end of a store transaction(s).
         let flush = self.buffer.encode_at(self.cursor, meta.size(), &meta)?;
