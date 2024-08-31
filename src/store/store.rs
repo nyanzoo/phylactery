@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, iter::Peekable};
 
+use log::info;
 use necronomicon::{BinaryData, ByteStr, OwnedImpl, PoolImpl, Shared, SharedImpl};
 
 use crate::{
@@ -66,6 +67,7 @@ impl<'a> Store<'a> {
     ) -> Result<Self, Error> {
         // Make sure dir exists
         std::fs::create_dir_all(&dir)?;
+        info!("store creating at '{dir}'");
         let meta = MetaDataStore::new(dir.clone(), meta_pool, shards, meta_shard_len)?;
         let data = DataStore::new(dir.clone(), shards, data_shard_len, max_disk_usage)?;
         let mut graveyards = Vec::new();
@@ -73,6 +75,7 @@ impl<'a> Store<'a> {
             graveyards.push(Graveyard::new(dir.clone().into(), max_disk_usage));
         }
 
+        info!("store created at '{dir}'");
         // TODO: read back the deques for recovery
         let deques = BTreeMap::new();
 
