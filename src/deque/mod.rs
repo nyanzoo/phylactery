@@ -371,7 +371,7 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let mut deque = Deque::new(
             dir.path().to_str().unwrap().to_owned(),
-            1024,
+            1024 * 1024,
             8192 * 1024,
             Version::V1,
         )
@@ -391,11 +391,18 @@ mod test {
                 Push::Full => break,
             }
         }
+        let elapsed = now.elapsed();
+        println!("100,000 push in {:?}", elapsed);
 
+        let now = std::time::Instant::now();
         for flush in flushes.drain(..) {
             flush.flush().unwrap();
         }
 
+        let elapsed = now.elapsed();
+        println!("100,000 flush in {:?}", elapsed);
+
+        let now = std::time::Instant::now();
         let pool = PoolImpl::new(1024, 1024);
         // Because we read from the node in mem we also need to know to skip the backing buffer as well...
         for i in 0..100_000 {
@@ -408,7 +415,7 @@ mod test {
             );
         }
         let elapsed = now.elapsed();
-        println!("100,000 nodes in {:?}", elapsed);
+        println!("100,000 pop in {:?}", elapsed);
     }
 
     #[test]

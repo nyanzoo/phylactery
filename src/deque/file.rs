@@ -158,17 +158,16 @@ impl File {
             return Ok(Push::Full);
         }
 
+        let struct_size = Metadata::struct_size(self.version);
         // We need the original ptr for returning where the data is stored.
         let offset = write_ptr;
         // write the metadata.
         // ignore the flush result, we'll handle it later with the data flush.
-        _ = self.buffer.encode_at(
-            write_ptr as usize,
-            Metadata::struct_size(self.version),
-            &metadata,
-        )?;
+        _ = self
+            .buffer
+            .encode_at(write_ptr as usize, struct_size, &metadata)?;
 
-        write_ptr += Metadata::struct_size(self.version) as u64;
+        write_ptr += struct_size as u64;
         // write the data.
         let flush =
             self.buffer

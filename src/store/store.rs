@@ -49,6 +49,7 @@ impl Put {
 }
 
 pub struct Store<'a> {
+    dir: String,
     meta: MetaDataStore,
     data: DataStore,
     deques: BTreeMap<ByteStr<SharedImpl>, (Deque, Option<DequePeekIter<'a>>)>,
@@ -80,6 +81,7 @@ impl<'a> Store<'a> {
         let deques = BTreeMap::new();
 
         Ok(Self {
+            dir,
             meta,
             data,
             deques,
@@ -100,7 +102,11 @@ impl<'a> Store<'a> {
             ));
         }
         let deque = Deque::new(
-            dir.as_str().map(|s| s.to_string()).expect("valid string"),
+            format!(
+                "{}/{}",
+                self.dir,
+                dir.as_str().map(|s| s.to_string()).expect("valid string")
+            ),
             node_size,
             max_disk_usage,
             Version::V1,

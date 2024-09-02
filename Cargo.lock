@@ -434,7 +434,7 @@ dependencies = [
 [[package]]
 name = "necronomicon"
 version = "0.1.0"
-source = "git+https://github.com/nyanzoo/necronomicon?branch=develop#034cad699684d8a98eadea37f3cd381e843a6c0c"
+source = "git+https://github.com/nyanzoo/necronomicon?branch=develop#89dfccde0c20868a7348773becbb762a4609da96"
 dependencies = [
  "crossbeam-channel",
  "log",
@@ -747,9 +747,9 @@ checksum = "38b58827f4464d87d377d175e90bf58eb00fd8716ff0a62f80356b5e61555d0d"
 
 [[package]]
 name = "syn"
-version = "2.0.76"
+version = "2.0.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "578e081a14e0cefc3279b0472138c513f37b41a08d5a3cca9b6e4e8ceb6cd525"
+checksum = "9f35bcdf61fd8e7be6caf75f429fdca8beb3ed76584befb503b1569faee373ed"
 dependencies = [
  "proc-macro2",
  "quote",

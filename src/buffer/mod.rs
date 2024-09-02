@@ -78,18 +78,20 @@ where
     }
 }
 
-impl<F> Drop for Flush<F>
-where
-    F: Flushable,
-{
-    fn drop(&mut self) {
-        if let Flush::Flush(f) = self {
-            if let Err(e) = f.flush() {
-                error!("Error flushing buffer: {:?}", e);
-            }
-        }
-    }
-}
+// TODO: maybe implement Drop for Flush?
+// Need to be careful because this will flush on drop and may incur hidden costs!
+// impl<F> Drop for Flush<F>
+// where
+//     F: Flushable,
+// {
+//     fn drop(&mut self) {
+//         if let Flush::Flush(f) = self {
+//             if let Err(e) = f.flush() {
+//                 error!("Error flushing buffer: {:?}", e);
+//             }
+//         }
+//     }
+// }
 
 pub trait Buffer {
     type Flushable: Flushable;

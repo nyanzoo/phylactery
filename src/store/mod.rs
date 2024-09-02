@@ -777,7 +777,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn store_put_get() {
+    fn store_put_get_full() {
         let dir1 = tempdir().unwrap();
         let dir2 = tempdir().unwrap();
         let dir3 = tempdir().unwrap();
@@ -879,6 +879,137 @@ mod tests {
 
         let elapsed = now.elapsed();
         println!("100,000 get: {:?}", elapsed);
+        drop(handle);
+    }
+
+    #[test]
+    fn store_deque_full() {
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        let dir3 = tempdir().unwrap();
+        let dir4 = tempdir().unwrap();
+        let configs = vec![
+            Config {
+                dir: dir1.path().to_str().unwrap().to_string(),
+                shards: 100,
+                data_len: 0x4000,
+                meta_len: 0x4000 * 0x1000,
+                max_disk_usage: 0x8000 * 0x1000,
+                block_size: 0x4000,
+                capacity: 0x1000,
+            },
+            Config {
+                dir: dir2.path().to_str().unwrap().to_string(),
+                shards: 100,
+                data_len: 0x4000,
+                meta_len: 0x4000 * 0x1000,
+                max_disk_usage: 0x8000 * 0x1000,
+                block_size: 0x4000,
+                capacity: 0x1000,
+            },
+            Config {
+                dir: dir3.path().to_str().unwrap().to_string(),
+                shards: 100,
+                data_len: 0x4000,
+                meta_len: 0x4000 * 0x1000,
+                max_disk_usage: 0x8000 * 0x1000,
+                block_size: 0x4000,
+                capacity: 0x1000,
+            },
+            Config {
+                dir: dir4.path().to_str().unwrap().to_string(),
+                shards: 100,
+                data_len: 0x4000,
+                meta_len: 0x4000 * 0x1000,
+                max_disk_usage: 0x8000 * 0x1000,
+                block_size: 0x4000,
+                capacity: 0x1000,
+            },
+        ];
+        let (requests_tx, requests_rx) = bounded(1024);
+        let (responses_tx, responses_rx) = bounded(1024);
+
+        let handle = std::thread::spawn(move || {
+            let store = Store::new(
+                configs,
+                requests_rx,
+                responses_tx,
+                PoolImpl::new(0x8000, 0x8000),
+            )
+            .unwrap();
+            store.run();
+        });
+
+        let path = ByteStr::new(BinaryData::new(SharedImpl::test_new(b"kittens")));
+        requests_tx
+            .send(Request::Create(Create::new(
+                1,
+                1,
+                path.clone(),
+                1024 * 1024,
+                1024 * 8096,
+            )))
+            .unwrap();
+        let response = responses_rx.recv().unwrap();
+        match response {
+            Response::Create(ack) => {
+                assert_eq!(ack.response().code(), SUCCESS);
+            }
+            _ => panic!("unexpected response"),
+        }
+
+        println!("create done");
+        let now = std::time::Instant::now();
+        for i in 0..100_000 {
+            let value = BinaryData::new(SharedImpl::test_new(format!("value-{}", i).as_bytes()));
+            requests_tx
+                .send(Request::Push(Enqueue::new(1, 1, path.clone(), value)))
+                .unwrap();
+        }
+
+        println!("push done");
+        let responses = responses_rx.iter().take(100_000);
+        for response in responses {
+            match response {
+                Response::Push(ack) => {
+                    assert_eq!(ack.response().code(), SUCCESS);
+                }
+                _ => panic!("unexpected response"),
+            }
+        }
+
+        let elapsed = now.elapsed();
+        println!("100,000 push: {:?}", elapsed);
+        // crate::store::tree(&dir_path);
+
+        let now = std::time::Instant::now();
+        for _ in 0..100_000 {
+            requests_tx
+                .send(Request::Pop(Dequeue::new(1, 1, path.clone())))
+                .unwrap();
+        }
+
+        let mut i = 0;
+        let responses = responses_rx.iter().take(100_000);
+        for response in responses {
+            match response {
+                Response::Pop(ack) => {
+                    assert_eq!(ack.response().code(), SUCCESS);
+                    let value =
+                        BinaryData::new(SharedImpl::test_new(format!("value-{}", i).as_bytes()));
+                    assert_eq!(ack.value().expect("some").clone(), value);
+                    // assert_eq!(
+                    //     data.into_inner().data().as_slice(),
+                    //     format!("value-{}", i).as_bytes()
+                    // );
+                }
+                _ => panic!("unexpected response"),
+            }
+            i += 1;
+        }
+
+        let elapsed = now.elapsed();
+        println!("{i} pop: {:?}", elapsed);
         drop(handle);
     }
 }
