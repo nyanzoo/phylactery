@@ -26,10 +26,12 @@ pub use self::file::{Pop, Push};
 
 mod node;
 
+const META_FILE: &str = "meta.bin";
+
 pub fn recover(dir: impl AsRef<str>) -> Result<Deque, Error> {
     let mut meta = std::fs::OpenOptions::new()
         .read(true)
-        .open(format!("{}/meta.bin", dir.as_ref()))?;
+        .open(format!("{}/{META_FILE}", dir.as_ref()))?;
     let DequeMeta {
         node_size,
         max_disk_usage,
@@ -111,9 +113,11 @@ impl Deque {
         for file in read_dir {
             let file = file?;
             let file_path = file.path();
+            let file_path = file_path.file_name().expect("valid name");
+            if file_path == META_FILE {
+                continue;
+            }
             let index = file_path
-                .file_name()
-                .expect("valid name")
                 .to_str()
                 .expect("valid str")
                 .split(".")
@@ -138,7 +142,7 @@ impl Deque {
         let mut meta_file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
-            .open(format!("{dir}/meta.bin"))?;
+            .open(format!("{dir}/{META_FILE}"))?;
         meta.encode(&mut meta_file)?;
 
         Ok(Self {

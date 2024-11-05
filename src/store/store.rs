@@ -86,7 +86,9 @@ impl<'a> Store<'a> {
         // Make sure dir exists
         std::fs::create_dir_all(&dir)?;
         let store_dir = format!("{dir}/store");
+        std::fs::create_dir_all(&store_dir)?;
         let queue_dir = format!("{dir}/queue");
+        std::fs::create_dir_all(&queue_dir)?;
         info!("store creating at '{dir}'");
         let meta = MetaDataStore::new(store_dir.clone(), meta_pool, shards, meta_store)?;
         let data = DataStore::new(store_dir.clone(), shards, data_store)?;
@@ -135,7 +137,7 @@ impl<'a> Store<'a> {
             return Err(Error::DequeExists(dir));
         }
         let deque = Deque::new(
-            format!("{}/{}", self.dir, dir),
+            format!("{}/queue/{}", self.dir, dir),
             node_size,
             max_disk_usage,
             Version::V1,

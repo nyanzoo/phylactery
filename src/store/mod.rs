@@ -7,9 +7,7 @@ use std::{
 
 use ::log::{error, trace};
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
-pub use data::Config as DataConfig;
 use hashring::HashRing;
-pub use meta::Config as MetaConfig;
 use necronomicon::{
     deque_codec::{
         Create, CreateAck, Delete as DequeDelete, DeleteAck as DequeDeleteAck, Dequeue, DequeueAck,
@@ -21,14 +19,14 @@ use necronomicon::{
 };
 
 mod cache;
-
-mod graveyard;
-
 mod data;
+mod graveyard;
+pub use data::Config as DataConfig;
 mod error;
 pub use error::Error;
 mod log;
 mod meta;
+pub use meta::Config as MetaConfig;
 mod metadata;
 mod store;
 
@@ -173,6 +171,7 @@ impl Store {
 
     pub fn run(mut self) {
         loop {
+            // println!("store loop");
             match self.requests.try_recv() {
                 Ok(ref request) => {
                     let store = match request {
@@ -257,18 +256,19 @@ impl Store {
 
                 // Errors
                 Err(TryRecvError::Disconnected) => {
+                    println!("store disconnected");
                     error!("store disconnected");
                     return;
                 }
                 Err(TryRecvError::Empty) => {
-                    let mut responses = VecDeque::new();
+                    // println!("no requests");
                     'response: loop {
                         let mut has_some = false;
                         for store in &self.stores {
                             match store.responses.try_recv() {
                                 Ok(response) => {
                                     has_some = true;
-                                    responses.push_back(response)
+                                    self.responses.send(response).expect("send response");
                                 }
                                 Err(TryRecvError::Disconnected) => {
                                     error!("store disconnected");
@@ -282,15 +282,12 @@ impl Store {
                             continue 'response;
                         }
 
-                        for response in responses.drain(..) {
-                            self.responses.send(response).expect("send response");
-                        }
-
+                        // println!("no responses");
                         break 'response;
                     }
 
                     // Sleep? or maybe just yield?
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             }
         }
@@ -835,8 +832,8 @@ mod tests {
                 },
             },
         ];
-        let (requests_tx, requests_rx) = bounded(1024);
-        let (responses_tx, responses_rx) = bounded(1024);
+        let (requests_tx, requests_rx) = unbounded();
+        let (responses_tx, responses_rx) = unbounded();
 
         let handle = std::thread::spawn(move || {
             let store = Store::new(
@@ -849,6 +846,7 @@ mod tests {
             store.run();
         });
 
+        println!("put 100,000");
         let now = std::time::Instant::now();
         for i in 0..100_000 {
             let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
@@ -858,6 +856,7 @@ mod tests {
                 .unwrap();
         }
 
+        println!("get put acks");
         let responses = responses_rx.iter().take(100_000);
         for response in responses {
             match response {
@@ -945,8 +944,8 @@ mod tests {
                 },
             },
         ];
-        let (requests_tx, requests_rx) = bounded(1024);
-        let (responses_tx, responses_rx) = bounded(1024);
+        let (requests_tx, requests_rx) = unbounded();
+        let (responses_tx, responses_rx) = unbounded();
 
         let handle = std::thread::spawn(move || {
             let store = Store::new(
