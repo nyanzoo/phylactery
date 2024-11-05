@@ -7,9 +7,9 @@ use std::{
 
 use ::log::{error, trace};
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
-use data::Config as DataConfig;
+pub use data::Config as DataConfig;
 use hashring::HashRing;
-use meta::Config as MetaConfig;
+pub use meta::Config as MetaConfig;
 use necronomicon::{
     deque_codec::{
         Create, CreateAck, Delete as DequeDelete, DeleteAck as DequeDeleteAck, Dequeue, DequeueAck,
