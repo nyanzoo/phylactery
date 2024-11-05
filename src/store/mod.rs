@@ -5,9 +5,11 @@ use std::{
     time::Duration,
 };
 
+use ::log::{error, trace};
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
+use data::Config as DataConfig;
 use hashring::HashRing;
-use log::{error, trace};
+use meta::Config as MetaConfig;
 use necronomicon::{
     deque_codec::{
         Create, CreateAck, Delete as DequeDelete, DeleteAck as DequeDeleteAck, Dequeue, DequeueAck,
@@ -25,9 +27,24 @@ mod graveyard;
 mod data;
 mod error;
 pub use error::Error;
+mod log;
 mod meta;
 mod metadata;
 mod store;
+
+// So for store transfer here is what we can do:
+// 1. we can make an mmap where we store the transaction #, a byte for lookup of the store,
+//    and then a list of bytes for all the files that were modified.
+//    we need to make sure we can store metadata files and data files
+// 2. these could be fixed sized and then be a ring buffer and then just
+//    iterate through where the transaction numbers are different
+//
+// alternatively
+// 1. we have a mmap that maps all files to their latest transaction number
+//    because if we send the full file it doesn't really matter we send...
+//    the problem is that we might have a lot of files... so we need to be prepared
+//    for the max number of files present across all data structures...
+// maybe we can store the differences of files and then read the candidate version and compare with tail to know what to send?
 
 const REPLICA_COUNT: usize = 10;
 
@@ -39,12 +56,23 @@ struct VNode {
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Config {
+    /// The directory where the store will be stored.
     pub dir: String,
+    /// The number of shards to use for the metadata & data store.
     pub shards: usize,
-    pub data_len: u64,
-    pub meta_len: u64,
-    pub max_disk_usage: u64,
+    /// The configuration for the metadata store.
+    pub meta_store: MetaConfig,
+    /// The configuration for the data store.
+    pub data_store: DataConfig,
+    /// The configuration for the pool that manages the data store.
+    pub pool: PoolConfig,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PoolConfig {
+    /// The size of each block in the pool. This is the granularity of the pool.
     pub block_size: usize,
+    /// The number of blocks in the pool.
     pub capacity: usize,
 }
 
@@ -279,27 +307,10 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
     let (requests_tx, requests_rx) = unbounded();
     let (responses_tx, responses_rx) = unbounded();
     let handle = std::thread::spawn(move || {
-        let Config {
-            dir,
-            data_len,
-            meta_len,
-            shards,
-            max_disk_usage,
-            block_size,
-            capacity,
-        } = config;
         let mut store = {
-            let pool = PoolImpl::new(block_size, capacity);
-
-            self::store::Store::new(
-                dir.clone(),
-                shards,
-                data_len,
-                meta_len,
-                max_disk_usage,
-                pool,
-            )
-            .unwrap_or_else(|err| panic!("failed to create store at {:?} due to {err}", dir))
+            self::store::Store::new(&config).unwrap_or_else(|err| {
+                panic!("failed to create store at {:?} due to {err}", config.dir)
+            })
         };
 
         // TODO: make constants?
@@ -475,7 +486,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
 
                 // Errors
                 Err(TryRecvError::Disconnected) => {
-                    error!("store at {:?} disconnected", dir);
+                    error!("store at {:?} disconnected", &config.dir);
                     return;
                 }
                 Err(TryRecvError::Empty) => {
@@ -786,38 +797,42 @@ mod tests {
             Config {
                 dir: dir1.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
             Config {
                 dir: dir2.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
             Config {
                 dir: dir3.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
             Config {
                 dir: dir4.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
         ];
         let (requests_tx, requests_rx) = bounded(1024);
@@ -892,38 +907,42 @@ mod tests {
             Config {
                 dir: dir1.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
             Config {
                 dir: dir2.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
             Config {
                 dir: dir3.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
             Config {
                 dir: dir4.path().to_str().unwrap().to_string(),
                 shards: 100,
-                data_len: 0x4000,
-                meta_len: 0x4000 * 0x1000,
-                max_disk_usage: 0x8000 * 0x1000,
-                block_size: 0x4000,
-                capacity: 0x1000,
+                meta_store: MetaConfig::test(0x4000 * 0x1000),
+                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
+                pool: PoolConfig {
+                    block_size: 0x4000,
+                    capacity: 0x1000,
+                },
             },
         ];
         let (requests_tx, requests_rx) = bounded(1024);

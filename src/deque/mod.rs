@@ -1,12 +1,12 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{create_dir_all, OpenOptions},
-    io::{BufReader, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     ops::Range,
     path::Path,
 };
 
-use necronomicon::{Decode, DecodeOwned, Owned};
+use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
 use crate::{
     deque::node::DequeNode,
@@ -26,15 +26,59 @@ pub use self::file::{Pop, Push};
 
 mod node;
 
+pub fn recover(dir: impl AsRef<str>) -> Result<Deque, Error> {
+    let mut meta = std::fs::OpenOptions::new()
+        .read(true)
+        .open(format!("{}/meta.bin", dir.as_ref()))?;
+    let DequeMeta {
+        node_size,
+        max_disk_usage,
+        version,
+    } = DequeMeta::decode(&mut meta)?;
+    Deque::new(dir.as_ref().to_owned(), node_size, max_disk_usage, version)
+}
+
+struct DequeMeta {
+    node_size: u64,
+    max_disk_usage: u64,
+    version: Version,
+}
+
+impl<R> Decode<R> for DequeMeta
+where
+    R: Read,
+{
+    fn decode(reader: &mut R) -> Result<Self, necronomicon::Error>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            node_size: u64::decode(reader)?,
+            max_disk_usage: u64::decode(reader)?,
+            version: Version::decode(reader)?,
+        })
+    }
+}
+
+impl<W> Encode<W> for DequeMeta
+where
+    W: Write,
+{
+    fn encode(&self, writer: &mut W) -> Result<(), necronomicon::Error> {
+        self.node_size.encode(writer)?;
+        self.max_disk_usage.encode(writer)?;
+        self.version.encode(writer)?;
+        Ok(())
+    }
+}
+
 pub struct Deque {
     deque: VecDeque<(DequeNode, Option<File>)>,
     /// The location of the node we are writing to.
     location: Location,
     dir: String,
-    node_size: u64,
-    max_disk_usage: u64,
+    meta: DequeMeta,
     disk_usage: u64,
-    version: Version,
 }
 
 // should read from files on init, write to files from push, and pop should go through list nodes.
@@ -53,6 +97,12 @@ impl Deque {
         if !path.exists() {
             create_dir_all(path)?;
         }
+
+        let meta = DequeMeta {
+            node_size,
+            max_disk_usage,
+            version,
+        };
 
         let read_dir = path.read_dir()?;
 
@@ -85,12 +135,16 @@ impl Deque {
             });
         }
 
+        let mut meta_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(format!("{dir}/meta.bin"))?;
+        meta.encode(&mut meta_file)?;
+
         Ok(Self {
             deque,
-            node_size,
-            max_disk_usage,
+            meta,
             disk_usage: current_disk_usage,
-            version,
             location,
             dir,
         })
@@ -105,10 +159,10 @@ impl Deque {
     }
 
     pub fn push(&mut self, value: &[u8]) -> Result<Push, Error> {
-        if self.disk_usage >= self.max_disk_usage {
+        if self.disk_usage >= self.meta.max_disk_usage {
             return Err(Error::DequeFull {
                 current: self.disk_usage,
-                max: self.max_disk_usage,
+                max: self.meta.max_disk_usage,
             });
         }
 
@@ -208,7 +262,7 @@ impl Deque {
     }
 
     fn push_back(&mut self) {
-        let node = DequeNode::new(&self.location, self.node_size, self.version);
+        let node = DequeNode::new(&self.location, self.meta.node_size, self.meta.version);
         self.deque.push_back((node, None));
         self.location.move_forward();
     }
@@ -301,7 +355,7 @@ mod test {
 
     use crate::{deque::file::Push, entry::Version};
 
-    use super::Deque;
+    use super::{recover, Deque};
 
     #[test]
     fn deque() {
@@ -332,6 +386,8 @@ mod test {
                 flush.flush().unwrap();
             }
         }
+
+        let mut deque = recover(dir.path().to_str().unwrap()).expect("recover");
 
         for _ in 0..10 {
             let pop = deque.pop(&mut buf).expect("valid node").expect("empty");

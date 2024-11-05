@@ -16,6 +16,7 @@ hashring = "0.3"
 libc = "0.2"
 log = "0.4"
 memmap2 = "0"
+opentelemetry = { version = "0", features = ["logs"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 

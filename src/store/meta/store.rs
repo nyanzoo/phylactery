@@ -11,6 +11,8 @@ use crate::store::meta::{
     },
 };
 
+use super::Config;
+
 const REPLICA_COUNT: usize = 10;
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq)]
@@ -33,14 +35,14 @@ pub struct Store {
 
 impl Store {
     /// Create a new metadata store.
-    pub fn new(dir: String, pool: PoolImpl, shards: usize, shard_len: u64) -> Result<Self, Error> {
+    pub fn new(dir: String, pool: PoolImpl, shards: usize, config: Config) -> Result<Self, Error> {
         let mut shards_v = vec![];
         let mut hasher = HashRing::new();
         for shard in 0..shards {
             for id in 0..REPLICA_COUNT {
                 hasher.add(VNode { shard, id });
             }
-            let shard = Shard::new(dir.clone(), shard, shard_len, &pool)?;
+            let shard = Shard::new(dir.clone(), shard, config.size, &pool)?;
             shards_v.push(shard);
         }
         Ok(Self {
@@ -103,6 +105,7 @@ mod tests {
     const POOL_SIZE: usize = 0x1000;
     const SHARDS: usize = 100;
     const SHARD_LEN: u64 = 0x1000;
+    const CONFIG: Config = Config::test(SHARD_LEN);
 
     #[test]
     fn store_put_get_delete() {
@@ -112,7 +115,7 @@ mod tests {
             dir_path,
             PoolImpl::new(BLOCK_SIZE, POOL_SIZE),
             SHARDS,
-            SHARD_LEN,
+            CONFIG,
         )
         .unwrap();
         let key = BinaryData::new(SharedImpl::test_new(b"kittens"));
@@ -142,7 +145,9 @@ mod tests {
             dir_path,
             PoolImpl::new(BLOCK_SIZE, POOL_SIZE),
             SHARDS,
-            SHARD_LEN * 0x1000,
+            Config {
+                size: SHARD_LEN * 0x1000,
+            },
         )
         .unwrap();
 

@@ -9,7 +9,7 @@ use crate::{
     usize_to_u64,
 };
 
-use super::shard::Shard;
+use super::{shard::Shard, Config};
 
 pub struct Store {
     /// The path to the data directory.
@@ -19,15 +19,14 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(
-        dir: String,
-        shards: usize,
-        shard_len: u64,
-        max_disk_usage: u64,
-    ) -> Result<Self, Error> {
+    pub fn new(dir: String, shards: usize, config: Config) -> Result<Self, Error> {
+        let Config {
+            node_size,
+            max_disk_usage,
+        } = config;
         let mut shards_v = vec![];
         for shard in 0..shards {
-            let shard = Shard::new(dir.clone(), usize_to_u64(shard), shard_len, max_disk_usage)?;
+            let shard = Shard::new(dir.clone(), usize_to_u64(shard), node_size, max_disk_usage)?;
             shards_v.push(shard);
         }
 
@@ -80,12 +79,13 @@ mod test {
     const POOL_SIZE: usize = 0x1000;
     const SHARDS: usize = 100;
     const SHARD_LEN: u64 = 0x1000;
+    const CONFIG: Config = Config::test(SHARD_LEN, MAX_DISK_USAGE);
 
     #[test]
     fn store_put_get() {
         let dir = tempdir().unwrap();
         let dir_path_s = dir.path().to_str().unwrap().to_string();
-        let mut store = Store::new(dir_path_s, SHARDS, SHARD_LEN, MAX_DISK_USAGE).unwrap();
+        let mut store = Store::new(dir_path_s, SHARDS, CONFIG).unwrap();
 
         let Push::Entry {
             file,

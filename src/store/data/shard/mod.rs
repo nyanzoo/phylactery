@@ -26,11 +26,11 @@ impl Shard {
     pub(super) fn new(
         dir: String,
         shard: u64,
-        len: u64,
+        node_size: u64,
         max_disk_usage: u64,
     ) -> Result<Self, Error> {
         let path = format!("{}/{}", dir, shard);
-        let deque = Deque::new(path, len, max_disk_usage, Version::V1)?;
+        let deque = Deque::new(path, node_size, max_disk_usage, Version::V1)?;
 
         Ok(Self { dir, shard, deque })
     }

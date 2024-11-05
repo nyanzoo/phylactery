@@ -1,16 +1,16 @@
 use std::{collections::BTreeMap, iter::Peekable};
 
 use log::info;
-use necronomicon::{BinaryData, ByteStr, OwnedImpl, PoolImpl, Shared, SharedImpl};
+use necronomicon::{BinaryData, ByteStr, OwnedImpl, Pool, PoolImpl, Shared, SharedImpl};
 
 use crate::{
     buffer::{Flush, LazyWriteFileFlush},
-    deque::{Deque, Push},
+    deque::{self, Deque, Push},
     entry::{
         v1::{self},
         Readable, Version,
     },
-    store::MetaState,
+    store::{MetaState, PoolConfig},
     MASK,
 };
 
@@ -19,13 +19,16 @@ use super::{
     data::store::Store as DataStore,
     error::Error,
     graveyard::{tombstone::Tombstone, Graveyard},
+    log::Log,
     meta::{
         self,
         shard::{self, delete::Delete},
         store::Store as MetaDataStore,
     },
-    BufferOwner,
+    BufferOwner, Config,
 };
+
+const LRU_CAPACITY: usize = 30_000;
 
 type DequeIter<'a> = Box<dyn Iterator<Item = Result<Readable<SharedImpl>, Error>> + 'a>;
 type DequePeekIter<'a> = Peekable<DequeIter<'a>>;
@@ -48,45 +51,74 @@ impl Put {
     }
 }
 
+/// TODO: we should limit deque size the same we do stores, that way we can avoid weird counting for TL and
+/// for GC.
 pub struct Store<'a> {
     dir: String,
     meta: MetaDataStore,
     data: DataStore,
-    deques: BTreeMap<ByteStr<SharedImpl>, (Deque, Option<DequePeekIter<'a>>)>,
+    deques: BTreeMap<String, (Deque, Option<DequePeekIter<'a>>)>,
     graveyards: Vec<Graveyard>,
     cache: Lru<BinaryData<SharedImpl>, BinaryData<SharedImpl>>,
+    log: Log,
 }
 
 impl<'a> Store<'a> {
-    pub fn new(
-        dir: String,
-        shards: usize,
-        data_shard_len: u64,
-        meta_shard_len: u64,
-        max_disk_usage: u64,
-        meta_pool: PoolImpl,
-    ) -> Result<Self, Error> {
+    pub fn new(config: &Config) -> Result<Self, Error> {
+        let Config {
+            dir,
+            shards,
+            meta_store,
+            data_store,
+            pool: PoolConfig {
+                block_size,
+                capacity,
+            },
+        } = config.clone();
+
+        let meta_pool = PoolImpl::new(block_size, capacity);
+
+        // Each shard has a meta file and a graveyard file. For each shard, we need to
+        // calculate the worst case number of data entries that could be in the shard.
+        let transaction_log_entries =
+            shards + shards + (data_store.max_disk_usage / data_store.node_size) as usize;
+
         // Make sure dir exists
         std::fs::create_dir_all(&dir)?;
+        let store_dir = format!("{dir}/store");
+        let queue_dir = format!("{dir}/queue");
         info!("store creating at '{dir}'");
-        let meta = MetaDataStore::new(dir.clone(), meta_pool, shards, meta_shard_len)?;
-        let data = DataStore::new(dir.clone(), shards, data_shard_len, max_disk_usage)?;
+        let meta = MetaDataStore::new(store_dir.clone(), meta_pool, shards, meta_store)?;
+        let data = DataStore::new(store_dir.clone(), shards, data_store)?;
         let mut graveyards = Vec::new();
         for _ in 0..shards {
-            graveyards.push(Graveyard::new(dir.clone().into(), max_disk_usage));
+            graveyards.push(Graveyard::new(
+                store_dir.clone().into(),
+                data_store.max_disk_usage,
+            ));
         }
 
         info!("store created at '{dir}'");
         // TODO: read back the deques for recovery
-        let deques = BTreeMap::new();
+        let mut deques = BTreeMap::new();
+        for queue in std::fs::read_dir(queue_dir.clone())
+            .map_err(Error::Io)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+        {
+            let name = queue.to_str().expect("valid queue name").to_owned();
+            let deque = deque::recover(format!("{}/{}", queue_dir, name))?;
+            assert!(deques.insert(name, (deque, None)).is_none());
+        }
 
         Ok(Self {
-            dir,
+            dir: dir.clone(),
             meta,
             data,
             deques,
             graveyards,
-            cache: Lru::new(30_000),
+            cache: Lru::new(LRU_CAPACITY),
+            log: Log::new(dir, transaction_log_entries),
         })
     }
 
@@ -96,17 +128,14 @@ impl<'a> Store<'a> {
         node_size: u64,
         max_disk_usage: u64,
     ) -> Result<(), Error> {
+        let Ok(dir) = dir.as_str().map(|s| s.to_owned()) else {
+            return Err(Error::DequeInvalidKey);
+        };
         if self.deques.contains_key(&dir) {
-            return Err(Error::DequeExists(
-                dir.as_str().map(|s| s.to_string()).expect("valid string"),
-            ));
+            return Err(Error::DequeExists(dir));
         }
         let deque = Deque::new(
-            format!(
-                "{}/{}",
-                self.dir,
-                dir.as_str().map(|s| s.to_string()).expect("valid string")
-            ),
+            format!("{}/{}", self.dir, dir),
             node_size,
             max_disk_usage,
             Version::V1,
@@ -116,13 +145,14 @@ impl<'a> Store<'a> {
     }
 
     pub fn delete_deque(&mut self, dir: ByteStr<SharedImpl>) -> Result<(), Error> {
+        let Ok(dir) = dir.as_str().map(|s| s.to_owned()) else {
+            return Err(Error::DequeInvalidKey);
+        };
         if self.deques.remove(&dir).is_some() {
-            std::fs::remove_dir(dir.as_str().map(|s| s.to_string()).expect("valid string"))?;
+            std::fs::remove_dir(&dir)?;
             Ok(())
         } else {
-            Err(Error::DequeNotFound(
-                dir.as_str().map(|s| s.to_string()).expect("valid string"),
-            ))
+            Err(Error::DequeNotFound(dir))
         }
     }
 
@@ -131,9 +161,13 @@ impl<'a> Store<'a> {
         dir: ByteStr<SharedImpl>,
         value: BinaryData<SharedImpl>,
     ) -> Result<(), Error> {
-        let (deque, _) = self.deques.get_mut(&dir).ok_or_else(|| {
-            Error::DequeNotFound(dir.as_str().map(|s| s.to_string()).expect("valid string"))
-        })?;
+        let Ok(dir) = dir.as_str().map(|s| s.to_owned()) else {
+            return Err(Error::DequeInvalidKey);
+        };
+        let (deque, _) = self
+            .deques
+            .get_mut(&dir)
+            .ok_or_else(|| Error::DequeNotFound(dir))?;
         deque.push(value.data().as_slice())?;
         Ok(())
     }
@@ -143,9 +177,13 @@ impl<'a> Store<'a> {
         dir: ByteStr<SharedImpl>,
         buffer: &mut OwnedImpl,
     ) -> Result<Option<Readable<SharedImpl>>, Error> {
-        let (deque, _) = self.deques.get_mut(&dir).ok_or_else(|| {
-            Error::DequeNotFound(dir.as_str().map(|s| s.to_string()).expect("valid string"))
-        })?;
+        let Ok(dir) = dir.as_str().map(|s| s.to_owned()) else {
+            return Err(Error::DequeInvalidKey);
+        };
+        let (deque, _) = self
+            .deques
+            .get_mut(&dir)
+            .ok_or_else(|| Error::DequeNotFound(dir))?;
         deque.pop(buffer).map_err(Error::Deque)
     }
 
@@ -154,9 +192,13 @@ impl<'a> Store<'a> {
         dir: ByteStr<SharedImpl>,
         pool: &'static PoolImpl,
     ) -> Result<Option<Readable<SharedImpl>>, Box<dyn std::error::Error + 'a>> {
-        let (deque, itr) = self.deques.get_mut(&dir).ok_or_else(|| {
-            Error::DequeNotFound(dir.as_str().map(|s| s.to_string()).expect("valid string"))
-        })?;
+        let Ok(dir) = dir.as_str().map(|s| s.to_owned()) else {
+            return Err(Box::new(Error::DequeInvalidKey));
+        };
+        let (deque, itr) = self
+            .deques
+            .get_mut(&dir)
+            .ok_or_else(|| Error::DequeNotFound(dir))?;
 
         if deque.is_empty() {
             return Ok(None);
@@ -308,6 +350,8 @@ impl<'a> Store<'a> {
 
 #[cfg(test)]
 mod test {
+    use crate::store::{data::Config as DataConfig, meta::Config as MetaConfig};
+
     use necronomicon::Pool;
     use tempfile::tempdir;
 
@@ -319,20 +363,25 @@ mod test {
     const MAX_DISK_USAGE: u64 = 0x8000 * 0x1000;
     const BLOCK_SIZE: usize = 0x4000;
     const CAPACITY: usize = 0x1000;
+    const META_CONFIG: MetaConfig = MetaConfig::test(META_SHARD_LEN);
+    const DATA_CONFIG: DataConfig = DataConfig::test(DATA_SHARD_LEN, MAX_DISK_USAGE);
+    const POOL_CONFIG: PoolConfig = PoolConfig {
+        block_size: BLOCK_SIZE,
+        capacity: CAPACITY,
+    };
 
     #[test]
     fn store_put_get() {
         let dir = tempdir().unwrap();
         // let dir_path = dir.path().to_path_buf();
         let dir_path_str = dir.path().to_str().unwrap().to_string();
-        let mut store = Store::new(
-            dir_path_str,
-            SHARDS,
-            DATA_SHARD_LEN,
-            META_SHARD_LEN,
-            MAX_DISK_USAGE,
-            PoolImpl::new(BLOCK_SIZE, CAPACITY),
-        )
+        let mut store = Store::new(&Config {
+            dir: dir_path_str,
+            shards: SHARDS,
+            meta_store: META_CONFIG,
+            data_store: DATA_CONFIG,
+            pool: POOL_CONFIG,
+        })
         .unwrap();
 
         let now = std::time::Instant::now();

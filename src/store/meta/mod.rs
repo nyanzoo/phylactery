@@ -20,6 +20,21 @@ pub use error::Error;
 pub mod shard;
 pub mod store;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct Config {
+    /// The max size of a file containing metadata. This is the same across shards.
+    /// Please note that this holds the keys and the file pointers to the data store.
+    /// So it is possible to run out of space in metadata store before the data store.
+    pub size: u64,
+}
+
+impl Config {
+    #[cfg(test)]
+    pub const fn test(size: u64) -> Self {
+        Self { size }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Metadata {
     pub mask: u32,

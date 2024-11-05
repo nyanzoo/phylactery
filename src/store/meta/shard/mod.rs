@@ -59,7 +59,7 @@ pub(super) struct Shard {
 
 impl Shard {
     pub(super) fn new(dir: String, shard: usize, len: u64, pool: &PoolImpl) -> Result<Self, Error> {
-        let buffer = MmapBuffer::new(&format!("{dir}/{shard}.bin"), len)?;
+        let buffer = MmapBuffer::new(format!("{dir}/{shard}.bin"), len)?;
 
         // Scan the file for tombstones.
         let mut tombstones = Vec::new();
