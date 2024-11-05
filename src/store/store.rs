@@ -59,7 +59,7 @@ pub struct Store<'a> {
     data: DataStore,
     deques: BTreeMap<String, (Deque, Option<DequePeekIter<'a>>)>,
     graveyards: Vec<Graveyard>,
-    cache: Lru<BinaryData<SharedImpl>, BinaryData<SharedImpl>>,
+    cache: Lru<Vec<u8>, Vec<u8>>,
     log: Log,
 }
 
@@ -280,7 +280,8 @@ impl<'a> Store<'a> {
         key: BinaryData<SharedImpl>,
         buffer: &mut OwnedImpl,
     ) -> Result<Option<Readable<SharedImpl>>, Error> {
-        if let Some(value) = self.cache.get(&key) {
+        if let Some(value) = self.cache.get(&key.data().as_slice().into()) {
+            let value = BinaryData::from_owned(value, buffer)?;
             let data = Readable::new(Version::V1, value.clone());
             return Ok(Some(data));
         }
@@ -339,7 +340,8 @@ impl<'a> Store<'a> {
         };
 
         if res.is_ok() {
-            self.cache.put(key, value);
+            self.cache
+                .put(key.data().as_slice().into(), value.data().as_slice().into());
         }
 
         res
