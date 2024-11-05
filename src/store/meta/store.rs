@@ -42,7 +42,7 @@ impl Store {
             for id in 0..REPLICA_COUNT {
                 hasher.add(VNode { shard, id });
             }
-            let shard = Shard::new(dir.clone(), shard, config.size, &pool)?;
+            let shard = Shard::new(dir.clone(), shard, config.size.to_bytes(), &pool)?;
             shards_v.push(shard);
         }
         Ok(Self {
@@ -96,6 +96,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
 
+    use std::sync::LazyLock;
+
     use super::*;
 
     use necronomicon::SharedImpl;
@@ -104,8 +106,8 @@ mod tests {
     const BLOCK_SIZE: usize = 0x1000;
     const POOL_SIZE: usize = 0x1000;
     const SHARDS: usize = 100;
-    const SHARD_LEN: u64 = 0x1000;
-    const CONFIG: Config = Config::test(SHARD_LEN);
+    const SHARD_LEN: u32 = 0x1000;
+    static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::test(SHARD_LEN));
 
     #[test]
     fn store_put_get_delete() {
@@ -115,7 +117,7 @@ mod tests {
             dir_path,
             PoolImpl::new(BLOCK_SIZE, POOL_SIZE),
             SHARDS,
-            CONFIG,
+            CONFIG.clone(),
         )
         .unwrap();
         let key = BinaryData::new(SharedImpl::test_new(b"kittens"));
@@ -145,9 +147,7 @@ mod tests {
             dir_path,
             PoolImpl::new(BLOCK_SIZE, POOL_SIZE),
             SHARDS,
-            Config {
-                size: SHARD_LEN * 0x1000,
-            },
+            Config::test(SHARD_LEN.clone() * 0x1000),
         )
         .unwrap();
 

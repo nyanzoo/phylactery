@@ -15,7 +15,7 @@ use necronomicon::{
     },
     kv_store_codec::{Delete, DeleteAck, Get, GetAck, Put, PutAck},
     Ack, ByteStr, Decode, Encode, Header, Pool as _, PoolImpl, SharedImpl, KEY_DOES_NOT_EXIST,
-    QUEUE_EMPTY,
+    QUEUE_EMPTY, QUEUE_FULL,
 };
 
 mod cache;
@@ -66,7 +66,7 @@ pub struct Config {
     pub pool: PoolConfig,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PoolConfig {
     /// The size of each block in the pool. This is the granularity of the pool.
     pub block_size: usize,
@@ -312,9 +312,10 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
 
         // TODO: make constants?
         // We can use a small pool for errors and should be fine?
-        let err_pool = PoolImpl::new(128, 1024);
+        let err_pool = PoolImpl::new(1024, 1024);
 
         let mut responses = VecDeque::new();
+        let mut flush_put_queue = VecDeque::new();
         let store = &mut store;
         loop {
             // TODO: maybe handle error responses more gracefully?
@@ -327,7 +328,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
             match requests_rx.try_recv() {
                 // Deque
                 Ok(Request::Create(request)) => {
-                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let mut owned = err_pool.acquire("error", BufferOwner::Error);
                     let result = store
                         .create_deque(
                             request.path().clone(),
@@ -348,7 +349,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     responses.push_back(Response::Create(ack));
                 }
                 Ok(Request::Remove(request)) => {
-                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let mut owned = err_pool.acquire("error", BufferOwner::Error);
                     let result = store.delete_deque(request.path().clone()).map_err(|err| {
                         necronomicon::Response {
                             code: necronomicon::INTERNAL_ERROR,
@@ -365,7 +366,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     responses.push_back(Response::Remove(ack));
                 }
                 Ok(Request::Push(request)) => {
-                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let mut owned = err_pool.acquire("error", BufferOwner::Error);
                     let result = store
                         .push_back(request.path().clone(), request.value().clone())
                         .map_err(|err| necronomicon::Response {
@@ -382,8 +383,8 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     responses.push_back(Response::Push(ack));
                 }
                 Ok(Request::Pop(request)) => {
-                    let mut owned = pool.acquire(BufferOwner::PopFront);
-                    let mut owned_err = err_pool.acquire(BufferOwner::Error);
+                    let mut owned = pool.acquire("pop", BufferOwner::PopFront);
+                    let mut owned_err = err_pool.acquire("error", BufferOwner::Error);
                     let result =
                         store
                             .pop_front(request.path().clone(), &mut owned)
@@ -405,7 +406,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                 }
                 Ok(Request::Peek { .. }) => {
                     unimplemented!("peek")
-                    // let mut owned = err_pool.acquire(BufferOwner::Error);
+                    // let mut owned = err_pool.acquire("error",BufferOwner::Error);
                     // let result = store
                     //     .peek(dir, &pool)
                     //     .map_err(|err| necronomicon::Response {
@@ -420,7 +421,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
 
                 // Store
                 Ok(Request::Delete(request)) => {
-                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let mut owned = err_pool.acquire("error", BufferOwner::Error);
                     let result =
                         store
                             .delete(request.key().clone())
@@ -438,8 +439,8 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     responses.push_back(Response::Delete(ack));
                 }
                 Ok(Request::Get(request)) => {
-                    let mut owned = pool.acquire(BufferOwner::Get);
-                    let mut owned_err = err_pool.acquire(BufferOwner::Error);
+                    let mut owned = pool.acquire("get", BufferOwner::Get);
+                    let mut owned_err = err_pool.acquire("error", BufferOwner::Error);
                     let result = store.get(request.key().clone(), &mut owned).map_err(|err| {
                         necronomicon::Response {
                             code: necronomicon::INTERNAL_ERROR,
@@ -459,7 +460,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     responses.push_back(Response::Get(ack));
                 }
                 Ok(Request::Put(request)) => {
-                    let mut owned = err_pool.acquire(BufferOwner::Error);
+                    let mut owned = err_pool.acquire("error", BufferOwner::Error);
                     // NOTE: double check the bytestr for the err. If it is good,
                     // then it means that the decode error is from something else.
                     let result = store
@@ -471,14 +472,14 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                                     .expect("err reason"),
                             ),
                         });
-                    let ack = match result {
-                        Ok(_) => request.ack(),
+                    match result {
+                        Ok(put) => flush_put_queue.push_back((request, put)),
                         Err(necronomicon::Response { code, reason }) => {
                             trace!("put nack: {} {:?}", code, reason);
-                            request.nack(code, reason)
+                            let ack = request.nack(code, reason);
+                            responses.push_back(Response::Put(ack));
                         }
                     };
-                    responses.push_back(Response::Put(ack));
                 }
 
                 // Errors
@@ -487,6 +488,23 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                     return;
                 }
                 Err(TryRecvError::Empty) => {
+                    for (request, put) in flush_put_queue.drain(..) {
+                        let response = match put.commit() {
+                            Ok(_) => request.ack(),
+                            Err(err) => {
+                                let mut owned = err_pool.acquire("error", BufferOwner::Error);
+                                request.nack(
+                                    necronomicon::INTERNAL_ERROR,
+                                    Some(
+                                        ByteStr::from_owned(err.to_string(), &mut owned)
+                                            .expect("err reason"),
+                                    ),
+                                )
+                            }
+                        };
+                        responses.push_back(Response::Put(response));
+                    }
+
                     for response in responses.drain(..) {
                         responses_tx.send(response).expect("send response");
                     }
@@ -555,10 +573,11 @@ where
         match u8::decode(reader)? {
             0 => Ok(Self::Compacting),
             1 => Ok(Self::Full),
-            _ => Err(necronomicon::Error::Decode(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid meta state",
-            ))),
+            _ => Err(necronomicon::Error::Decode {
+                kind: "MetaState",
+                buffer: None,
+                source: "invalid meta state".into(),
+            }),
         }
     }
 }
@@ -778,7 +797,6 @@ pub fn hexyl(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use crossbeam::channel::bounded;
     use necronomicon::{Ack, BinaryData, SUCCESS};
     use tempfile::tempdir;
 
@@ -786,6 +804,14 @@ mod tests {
 
     #[test]
     fn store_put_get_full() {
+        let shards = 100;
+        let meta_store = MetaConfig::test(0x4000 * 0x1000);
+        let data_store = DataConfig::test(0x4000, 0x8000 * 0x1000);
+        let pool = PoolConfig {
+            block_size: 0x4000,
+            capacity: 0x1000,
+        };
+
         let dir1 = tempdir().unwrap();
         let dir2 = tempdir().unwrap();
         let dir3 = tempdir().unwrap();
@@ -793,49 +819,37 @@ mod tests {
         let configs = vec![
             Config {
                 dir: dir1.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
             Config {
                 dir: dir2.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
             Config {
                 dir: dir3.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
             Config {
                 dir: dir4.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
         ];
         let (requests_tx, requests_rx) = unbounded();
         let (responses_tx, responses_rx) = unbounded();
-
         let handle = std::thread::spawn(move || {
+            // println!("configs: {:?}", configs);
             let store = Store::new(
                 configs,
                 requests_rx,
@@ -861,7 +875,7 @@ mod tests {
         for response in responses {
             match response {
                 Response::Put(ack) => {
-                    assert!(ack.response().code() == SUCCESS);
+                    assert_eq!(ack.response(), necronomicon::Response::success());
                 }
                 _ => panic!("unexpected response"),
             }
@@ -881,7 +895,7 @@ mod tests {
         for response in responses_rx.iter().take(100_000) {
             match response {
                 Response::Get(ack) => {
-                    assert!(ack.response().code() == SUCCESS);
+                    assert_eq!(ack.response(), necronomicon::Response::success());
                     // assert_eq!(
                     //     data.into_inner().data().as_slice(),
                     //     format!("value-{}", i).as_bytes()
@@ -898,6 +912,14 @@ mod tests {
 
     #[test]
     fn store_deque_full() {
+        let shards = 100;
+        let meta_store = MetaConfig::test(0x4000 * 0x1000);
+        let data_store = DataConfig::test(0x4000, 0x8000 * 0x1000);
+        let pool = PoolConfig {
+            block_size: 0x4000,
+            capacity: 0x1000,
+        };
+
         let dir1 = tempdir().unwrap();
         let dir2 = tempdir().unwrap();
         let dir3 = tempdir().unwrap();
@@ -905,43 +927,31 @@ mod tests {
         let configs = vec![
             Config {
                 dir: dir1.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
             Config {
                 dir: dir2.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
             Config {
                 dir: dir3.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
             Config {
                 dir: dir4.path().to_str().unwrap().to_string(),
-                shards: 100,
-                meta_store: MetaConfig::test(0x4000 * 0x1000),
-                data_store: DataConfig::test(0x4000, 0x8000 * 0x1000),
-                pool: PoolConfig {
-                    block_size: 0x4000,
-                    capacity: 0x1000,
-                },
+                shards,
+                meta_store,
+                data_store,
+                pool,
             },
         ];
         let (requests_tx, requests_rx) = unbounded();

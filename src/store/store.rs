@@ -28,7 +28,7 @@ use super::{
     BufferOwner, Config,
 };
 
-const LRU_CAPACITY: usize = 10_000;
+const LRU_CAPACITY: usize = 10 * 1000;
 
 type DequeIter<'a> = Box<dyn Iterator<Item = Result<Readable<SharedImpl>, Error>> + 'a>;
 type DequePeekIter<'a> = Peekable<DequeIter<'a>>;
@@ -80,8 +80,9 @@ impl<'a> Store<'a> {
 
         // Each shard has a meta file and a graveyard file. For each shard, we need to
         // calculate the worst case number of data entries that could be in the shard.
-        let transaction_log_entries =
-            shards + shards + (data_store.max_disk_usage / data_store.node_size) as usize;
+        let transaction_log_entries = shards
+            + shards
+            + (data_store.max_disk_usage.to_bytes() / data_store.node_size.to_bytes()) as usize;
 
         // Make sure dir exists
         std::fs::create_dir_all(&dir)?;
@@ -96,7 +97,7 @@ impl<'a> Store<'a> {
         for _ in 0..shards {
             graveyards.push(Graveyard::new(
                 store_dir.clone().into(),
-                data_store.max_disk_usage,
+                data_store.max_disk_usage.to_bytes(),
             ));
         }
 
@@ -315,9 +316,8 @@ impl<'a> Store<'a> {
         &mut self,
         key: BinaryData<SharedImpl>,
         value: BinaryData<SharedImpl>,
-    ) -> Result<Option<Put>, Error> {
+    ) -> Result<Put, Error> {
         let prepare = self.meta.prepare_put(key.clone())?;
-        // println!("prepare");
         let res = match self
             .data
             .put(prepare.lookup.shard, value.data().as_slice())?
@@ -329,16 +329,15 @@ impl<'a> Store<'a> {
                 crc,
                 flush,
             } => {
-                // println!("entry");
                 assert_eq!(crc, v1::generate_crc(value.data().as_slice()));
                 let meta_put = self.meta.put(key.clone(), prepare, file, offset, len)?;
-                // println!("meta_put");
-                Ok(Some(Put {
+
+                Ok(Put {
                     data_flush: flush,
                     meta: meta_put,
-                }))
+                })
             }
-            Push::Full => Ok(None),
+            Push::Full => Err(Error::StoreFull),
         };
 
         if res.is_ok() {
@@ -354,6 +353,8 @@ impl<'a> Store<'a> {
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
     use crate::store::{data::Config as DataConfig, meta::Config as MetaConfig};
 
     use necronomicon::Pool;
@@ -362,28 +363,29 @@ mod test {
     use super::*;
 
     const SHARDS: usize = 100;
-    const DATA_SHARD_LEN: u64 = 0x4000;
-    const META_SHARD_LEN: u64 = 0x4000 * 0x1000;
-    const MAX_DISK_USAGE: u64 = 0x8000 * 0x1000;
+    const DATA_SHARD_LEN: u32 = 0x8000;
+    const META_SHARD_LEN: u32 = 0x8000 * 0x1000;
+    const MAX_DISK_USAGE: u32 = 0xC000 * 0x1000;
     const BLOCK_SIZE: usize = 0x4000;
     const CAPACITY: usize = 0x1000;
-    const META_CONFIG: MetaConfig = MetaConfig::test(META_SHARD_LEN);
-    const DATA_CONFIG: DataConfig = DataConfig::test(DATA_SHARD_LEN, MAX_DISK_USAGE);
+    static META_CONFIG: LazyLock<MetaConfig> = LazyLock::new(|| MetaConfig::test(META_SHARD_LEN));
+    const DATA_CONFIG: LazyLock<DataConfig> =
+        LazyLock::new(|| DataConfig::test(DATA_SHARD_LEN, MAX_DISK_USAGE));
     const POOL_CONFIG: PoolConfig = PoolConfig {
         block_size: BLOCK_SIZE,
         capacity: CAPACITY,
     };
 
     #[test]
-    fn store_put_get() {
+    fn store_put_get_single() {
         let dir = tempdir().unwrap();
         // let dir_path = dir.path().to_path_buf();
         let dir_path_str = dir.path().to_str().unwrap().to_string();
         let mut store = Store::new(&Config {
             dir: dir_path_str,
             shards: SHARDS,
-            meta_store: META_CONFIG,
-            data_store: DATA_CONFIG,
+            meta_store: META_CONFIG.clone(),
+            data_store: DATA_CONFIG.clone(),
             pool: POOL_CONFIG,
         })
         .unwrap();
@@ -393,7 +395,7 @@ mod test {
         for i in 0..100_000 {
             let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
             let value = BinaryData::new(SharedImpl::test_new(format!("value-{}", i).as_bytes()));
-            let put = store.put(key, value).unwrap().unwrap();
+            let put = store.put(key, value).unwrap();
             flushes.push(put);
         }
         let elapsed = now.elapsed();
@@ -418,7 +420,7 @@ mod test {
         let random_range = rand::seq::index::sample(&mut rand::thread_rng(), 100_000, 100_000);
         for i in random_range {
             let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
-            let mut buffer = pool.acquire("test");
+            let mut buffer = pool.acquire("cat", "test");
             let data = store.get(key, &mut buffer).unwrap().unwrap();
             assert_eq!(
                 data.into_inner().data().as_slice(),

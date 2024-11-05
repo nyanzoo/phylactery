@@ -36,4 +36,7 @@ pub enum Error {
 
     #[error("necronomicon error: {0}")]
     Necronomicon(#[from] necronomicon::Error),
+
+    #[error("store full")]
+    StoreFull,
 }

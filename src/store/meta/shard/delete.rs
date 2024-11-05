@@ -55,7 +55,7 @@ impl Shard {
 
                 let start = lookup.offset + Metadata::size();
                 let state_offset = lookup.offset + Metadata::state_offset();
-                let mut owned = pool.acquire(BufferOwner::Delete);
+                let mut owned = pool.acquire("meta shard delete", BufferOwner::Delete);
                 let decoded_key = decode_key(&self.buffer, start, &mut owned)?;
 
                 if decoded_key == key {

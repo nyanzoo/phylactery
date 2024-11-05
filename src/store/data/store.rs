@@ -26,7 +26,12 @@ impl Store {
         } = config;
         let mut shards_v = vec![];
         for shard in 0..shards {
-            let shard = Shard::new(dir.clone(), usize_to_u64(shard), node_size, max_disk_usage)?;
+            let shard = Shard::new(
+                dir.clone(),
+                usize_to_u64(shard),
+                node_size.to_bytes(),
+                max_disk_usage.to_bytes(),
+            )?;
             shards_v.push(shard);
         }
 
@@ -69,23 +74,25 @@ impl Store {
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
     use necronomicon::{Pool as _, PoolImpl, Shared as _};
     use tempfile::tempdir;
 
     use super::*;
 
     const BLOCK_SIZE: usize = 0x1000;
-    const MAX_DISK_USAGE: u64 = 0x8000;
+    const MAX_DISK_USAGE: u32 = 0x8000;
     const POOL_SIZE: usize = 0x1000;
     const SHARDS: usize = 100;
-    const SHARD_LEN: u64 = 0x1000;
-    const CONFIG: Config = Config::test(SHARD_LEN, MAX_DISK_USAGE);
+    const SHARD_LEN: u32 = 0x1000;
+    static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::test(SHARD_LEN, MAX_DISK_USAGE));
 
     #[test]
     fn store_put_get() {
         let dir = tempdir().unwrap();
         let dir_path_s = dir.path().to_str().unwrap().to_string();
-        let mut store = Store::new(dir_path_s, SHARDS, CONFIG).unwrap();
+        let mut store = Store::new(dir_path_s, SHARDS, CONFIG.clone()).unwrap();
 
         let Push::Entry {
             file,
@@ -107,7 +114,7 @@ mod test {
         // crate::store::tree(&dir_path);
 
         let pool = PoolImpl::new(BLOCK_SIZE, POOL_SIZE);
-        let mut buffer = pool.acquire("test");
+        let mut buffer = pool.acquire("cat", "test");
         let get = store
             .get(42, file, offset, &mut buffer, Version::V1)
             .unwrap();

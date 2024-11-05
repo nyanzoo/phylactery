@@ -21,7 +21,7 @@ pub struct Remaining {
 }
 
 #[derive(Debug)]
-pub(crate) struct Entry<S>
+pub struct Entry<S>
 where
     S: Shared,
 {
@@ -54,7 +54,7 @@ where
             return None;
         }
 
-        let mut buf = self.pool.acquire(self.owner);
+        let mut buf = self.pool.acquire("peek itr", self.owner);
         let entry = read_entry(self.buffer.clone(), self.read, self.version, &mut buf);
 
         if let Ok(Entry { size, .. }) = entry {
@@ -337,7 +337,7 @@ mod test {
 
         {
             let pool = PoolImpl::new(1024, 1024);
-            let mut owned = pool.acquire("test");
+            let mut owned = pool.acquire("cat", "test");
             let Pop::Entry(pop) = file.pop(&mut owned).unwrap() else {
                 panic!("expected entry");
             };
@@ -382,7 +382,7 @@ mod test {
 
         {
             let pool = PoolImpl::new(1024, 1024);
-            let mut owned = pool.acquire("test");
+            let mut owned = pool.acquire("cat", "test");
             let Pop::Entry(pop) = file.pop(&mut owned).unwrap() else {
                 panic!("expected entry");
             };

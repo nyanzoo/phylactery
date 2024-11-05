@@ -35,7 +35,7 @@ impl Shard {
         let lookups = self.entries.get(&hash);
         if let Some(lookups) = lookups {
             for lookup in lookups {
-                let mut owned = pool.acquire(BufferOwner::Get);
+                let mut owned = pool.acquire("meta shard get", BufferOwner::Get);
                 let meta: Metadata = self.buffer.decode_at(lookup.offset, Metadata::size())?;
 
                 let start = lookup.offset + Metadata::size();

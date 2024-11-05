@@ -26,7 +26,7 @@ pub use self::file::{Pop, Push};
 
 mod node;
 
-const META_FILE: &str = "meta.bin";
+const META_FILE: &str = "queue.meta";
 
 pub fn recover(dir: impl AsRef<str>) -> Result<Deque, Error> {
     let mut meta = std::fs::OpenOptions::new()
@@ -333,8 +333,8 @@ impl Deque {
     where
         O: Owned,
     {
-        let path = format!("{}/{:08x}.bin", self.dir, file);
-        let file = OpenOptions::new().read(true).open(path)?;
+        let path = format!("{}/{:08x}.data", self.dir, file);
+        let file = OpenOptions::new().read(true).open(path.clone())?;
         let mut buf_reader = BufReader::new(file);
 
         let meta = Metadata::decode(&mut buf_reader)?;
@@ -373,7 +373,7 @@ mod test {
         .unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut buf = pool.acquire("pop");
+        let mut buf = pool.acquire("pop", "pop");
 
         {
             let mut flushes = vec![];
@@ -417,11 +417,11 @@ mod test {
         }
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut buf = pool.acquire("pop");
+        let mut buf = pool.acquire("pop", "pop");
         let pop = deque.pop(&mut buf).unwrap().unwrap();
         assert_eq!(&pop.into_inner().data().as_slice(), b"hello kitties");
 
-        let mut buf = pool.acquire("pop");
+        let mut buf = pool.acquire("pop", "pop");
         let pop = deque.pop(&mut buf).unwrap().unwrap();
         assert_eq!(&pop.into_inner().data().as_slice(), b"hello kitties");
     }
@@ -467,7 +467,7 @@ mod test {
         // Because we read from the node in mem we also need to know to skip the backing buffer as well...
         for i in 0..100_000 {
             let expected = format!("hello kitties {i}");
-            let mut buf = pool.acquire("pop");
+            let mut buf = pool.acquire("pop", "pop");
             let pop = deque.pop(&mut buf).unwrap().unwrap();
             assert_eq!(
                 String::from_utf8_lossy(pop.into_inner().data().as_slice()),
@@ -490,7 +490,7 @@ mod test {
         .unwrap();
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut buf = pool.acquire("pop");
+        let mut buf = pool.acquire("pop", "pop");
         assert_matches!(deque.pop(&mut buf), Ok(None));
     }
 }

@@ -59,18 +59,18 @@ pub(super) struct Shard {
 
 impl Shard {
     pub(super) fn new(dir: String, shard: usize, len: u64, pool: &PoolImpl) -> Result<Self, Error> {
-        let buffer = MmapBuffer::new(format!("{dir}/{shard}.bin"), len)?;
+        let buffer = MmapBuffer::new(format!("{dir}/{shard}.shard"), len)?;
         // Scan the file for tombstones.
         let mut tombstones = Vec::new();
         let mut entries: BTreeMap<u64, VecDeque<Lookup>> = BTreeMap::new();
         let mut start = 0usize;
         loop {
-            let mut owned = pool.acquire(BufferOwner::Init);
+            let mut owned = pool.acquire("meta shard", BufferOwner::Init);
 
             let meta: Metadata = match buffer.decode_at(start, Metadata::size()) {
                 Ok(meta) => meta,
                 Err(BufferError::Necronomicon(err)) => match err {
-                    necronomicon::Error::Decode(_) => break,
+                    necronomicon::Error::Decode { .. } => break,
                     necronomicon::Error::Io(err) => match err.kind() {
                         std::io::ErrorKind::UnexpectedEof => break,
                         _ => return Err(Error::Io(err)),

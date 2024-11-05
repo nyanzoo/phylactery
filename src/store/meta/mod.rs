@@ -3,6 +3,7 @@ use std::{
     mem::size_of,
 };
 
+use human_size::{Byte, SpecificSize};
 use necronomicon::{BinaryData, Decode, DecodeOwned, Encode, Owned, OwnedImpl, Shared, SharedImpl};
 
 use crate::{
@@ -25,13 +26,15 @@ pub struct Config {
     /// The max size of a file containing metadata. This is the same across shards.
     /// Please note that this holds the keys and the file pointers to the data store.
     /// So it is possible to run out of space in metadata store before the data store.
-    pub size: u64,
+    pub size: SpecificSize<Byte>,
 }
 
 impl Config {
     #[cfg(test)]
-    pub const fn test(size: u64) -> Self {
-        Self { size }
+    pub fn test(size: u32) -> Self {
+        Self {
+            size: SpecificSize::new(size, Byte).expect("valid size"),
+        }
     }
 }
 
@@ -120,9 +123,11 @@ where
         };
 
         if meta.mask != MASK {
-            return Err(necronomicon::Error::Decode(std::io::Error::other(
-                "bad mask",
-            )));
+            return Err(necronomicon::Error::Decode {
+                kind: "Metadata",
+                buffer: None,
+                source: "bad mask".into(),
+            });
         }
 
         Ok(meta)

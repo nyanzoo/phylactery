@@ -185,7 +185,7 @@ mod test {
         }
 
         let pool = PoolImpl::new(1024, 1024);
-        let mut owned = pool.acquire("pop");
+        let mut owned = pool.acquire("pop", "pop");
         let Pop::Entry(Entry { data, size }) = open.pop(&mut owned).expect("pop") else {
             panic!("pop");
         };
@@ -231,7 +231,7 @@ mod test {
 
         let pool = PoolImpl::new(1024, 1024);
 
-        let mut owned = pool.acquire("pop");
+        let mut owned = pool.acquire("pop", "pop");
 
         assert_matches!(node.open().unwrap().pop(&mut owned), Ok(Pop::WaitForFlush));
     }
