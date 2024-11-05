@@ -28,7 +28,7 @@ use super::{
     BufferOwner, Config,
 };
 
-const LRU_CAPACITY: usize = 30_000;
+const LRU_CAPACITY: usize = 10_000;
 
 type DequeIter<'a> = Box<dyn Iterator<Item = Result<Readable<SharedImpl>, Error>> + 'a>;
 type DequePeekIter<'a> = Peekable<DequeIter<'a>>;
