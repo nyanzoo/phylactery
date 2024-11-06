@@ -8,6 +8,8 @@ use std::{
 use ::log::{error, trace};
 use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use hashring::HashRing;
+use human_size::{Byte, SpecificSize};
+
 use necronomicon::{
     deque_codec::{
         Create, CreateAck, Delete as DequeDelete, DeleteAck as DequeDeleteAck, Dequeue, DequeueAck,
@@ -15,7 +17,7 @@ use necronomicon::{
     },
     kv_store_codec::{Delete, DeleteAck, Get, GetAck, Put, PutAck},
     Ack, ByteStr, Decode, Encode, Header, Pool as _, PoolImpl, SharedImpl, KEY_DOES_NOT_EXIST,
-    QUEUE_EMPTY, QUEUE_FULL,
+    QUEUE_EMPTY,
 };
 
 mod cache;
@@ -69,9 +71,19 @@ pub struct Config {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PoolConfig {
     /// The size of each block in the pool. This is the granularity of the pool.
-    pub block_size: usize,
+    pub block_size: SpecificSize<Byte>,
     /// The number of blocks in the pool.
     pub capacity: usize,
+}
+
+#[cfg(test)]
+impl PoolConfig {
+    pub fn test(block_size: u32, capacity: usize) -> Self {
+        Self {
+            block_size: SpecificSize::new(block_size, Byte).unwrap(),
+            capacity,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -807,10 +819,7 @@ mod tests {
         let shards = 100;
         let meta_store = MetaConfig::test(0x4000 * 0x1000);
         let data_store = DataConfig::test(0x4000, 0x8000 * 0x1000);
-        let pool = PoolConfig {
-            block_size: 0x4000,
-            capacity: 0x1000,
-        };
+        let pool = PoolConfig::test(0x4000, 0x1000);
 
         let dir1 = tempdir().unwrap();
         let dir2 = tempdir().unwrap();
@@ -915,10 +924,7 @@ mod tests {
         let shards = 100;
         let meta_store = MetaConfig::test(0x4000 * 0x1000);
         let data_store = DataConfig::test(0x4000, 0x8000 * 0x1000);
-        let pool = PoolConfig {
-            block_size: 0x4000,
-            capacity: 0x1000,
-        };
+        let pool = PoolConfig::test(0x4000, 0x1000);
 
         let dir1 = tempdir().unwrap();
         let dir2 = tempdir().unwrap();

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, iter::Peekable};
 
 use log::info;
-use necronomicon::{BinaryData, ByteStr, OwnedImpl, Pool, PoolImpl, Shared, SharedImpl};
+use necronomicon::{BinaryData, ByteStr, OwnedImpl, PoolImpl, Shared, SharedImpl};
 
 use crate::{
     buffer::{Flush, LazyWriteFileFlush},
@@ -11,7 +11,7 @@ use crate::{
         Readable, Version,
     },
     store::{MetaState, PoolConfig},
-    MASK,
+    u64_to_usize, MASK,
 };
 
 use super::{
@@ -76,7 +76,7 @@ impl<'a> Store<'a> {
             },
         } = config.clone();
 
-        let meta_pool = PoolImpl::new(block_size, capacity);
+        let meta_pool = PoolImpl::new(u64_to_usize(block_size.to_bytes()), capacity);
 
         // Each shard has a meta file and a graveyard file. For each shard, we need to
         // calculate the worst case number of data entries that could be in the shard.
@@ -366,15 +366,13 @@ mod test {
     const DATA_SHARD_LEN: u32 = 0x8000;
     const META_SHARD_LEN: u32 = 0x8000 * 0x1000;
     const MAX_DISK_USAGE: u32 = 0xC000 * 0x1000;
-    const BLOCK_SIZE: usize = 0x4000;
+    const BLOCK_SIZE: u32 = 0x4000;
     const CAPACITY: usize = 0x1000;
     static META_CONFIG: LazyLock<MetaConfig> = LazyLock::new(|| MetaConfig::test(META_SHARD_LEN));
     const DATA_CONFIG: LazyLock<DataConfig> =
         LazyLock::new(|| DataConfig::test(DATA_SHARD_LEN, MAX_DISK_USAGE));
-    const POOL_CONFIG: PoolConfig = PoolConfig {
-        block_size: BLOCK_SIZE,
-        capacity: CAPACITY,
-    };
+    static POOL_CONFIG: LazyLock<PoolConfig> =
+        LazyLock::new(|| PoolConfig::test(BLOCK_SIZE, CAPACITY));
 
     #[test]
     fn store_put_get_single() {
@@ -386,7 +384,7 @@ mod test {
             shards: SHARDS,
             meta_store: META_CONFIG.clone(),
             data_store: DATA_CONFIG.clone(),
-            pool: POOL_CONFIG,
+            pool: POOL_CONFIG.clone(),
         })
         .unwrap();
 
@@ -416,7 +414,7 @@ mod test {
         println!("100,000 flush: {:?}", elapsed);
 
         let now = std::time::Instant::now();
-        let pool = PoolImpl::new(BLOCK_SIZE, CAPACITY);
+        let pool = PoolImpl::new(BLOCK_SIZE as usize, CAPACITY);
         let random_range = rand::seq::index::sample(&mut rand::thread_rng(), 100_000, 100_000);
         for i in random_range {
             let key = BinaryData::new(SharedImpl::test_new(format!("key-{}", i).as_bytes()));
