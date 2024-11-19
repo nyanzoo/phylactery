@@ -36,7 +36,7 @@ pub fn push_pop(c: &mut Criterion) {
                     _ => panic!("failed to push"),
                 }
 
-                let mut buf = pool.acquire("pop");
+                let mut buf = pool.acquire("pop", "pop");
                 let Some(readable) = deque.pop(&mut buf).expect("failed to pop") else {
                     panic!("failed to pop");
                 };

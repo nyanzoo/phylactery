@@ -455,7 +455,7 @@ dependencies = [
 [[package]]
 name = "necronomicon"
 version = "0.1.0"
-source = "git+https://github.com/nyanzoo/necronomicon?branch=develop#f8729c8dbf9c1f338ce5d88c5b44a560c5bda4cd"
+source = "git+https://github.com/nyanzoo/necronomicon?branch=develop#1058c2a1d8280f89946b8f5152bcd28326b10ec3"
 dependencies = [
  "crossbeam-channel",
  "log",
