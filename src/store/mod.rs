@@ -30,6 +30,7 @@ mod log;
 mod meta;
 pub use meta::Config as MetaConfig;
 mod metadata;
+#[allow(clippy::module_inception)]
 mod store;
 
 // So for store transfer here is what we can do:
@@ -287,7 +288,7 @@ impl Store {
 struct StoreLoop {
     requests: Sender<Request>,
     responses: Receiver<Response>,
-    handle: JoinHandle<()>,
+    _handle: JoinHandle<()>,
 }
 
 fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
@@ -306,6 +307,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
 
         let mut flush_put_queue = VecDeque::new();
         let mut flush_push_queue = VecDeque::new();
+        let mut flush_delete_queue = VecDeque::new();
         let store = &mut store;
         loop {
             match requests_rx.try_recv() {
@@ -438,18 +440,25 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                                 ),
                             }
                         });
-                        let ack = match result {
-                            Ok(_) => request.ack(),
-                            Err(necronomicon::Response { code, reason }) => {
-                                request.nack(code, reason)
+                        match result {
+                            Ok(Some(delete)) => flush_delete_queue.push_back((request, delete)),
+                            Ok(None) => {
+                                let ack = request.nack(necronomicon::KEY_DOES_NOT_EXIST, None);
+                                responses_tx
+                                    .send(Response::Delete(ack))
+                                    .expect("send delete ack");
                             }
-                        };
-                        responses_tx
-                            .send(Response::Delete(ack))
-                            .expect("send delete ack");
+                            Err(necronomicon::Response { code, reason }) => {
+                                let ack = request.nack(code, reason);
+                                responses_tx
+                                    .send(Response::Delete(ack))
+                                    .expect("send delete ack");
+                            }
+                        }
                     }
                     Request::Get(request) => {
                         // Need to make sure everything is on disk before we read.
+                        drain_deletes(&mut flush_delete_queue, &responses_tx, &err_pool);
                         drain_puts(&mut flush_put_queue, &responses_tx, &err_pool);
 
                         let mut owned = pool.acquire("get", BufferOwner::Get);
@@ -507,6 +516,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
                 }
 
                 Err(TryRecvError::Empty) => {
+                    drain_deletes(&mut flush_delete_queue, &responses_tx, &err_pool);
                     drain_puts(&mut flush_put_queue, &responses_tx, &err_pool);
                     drain_pushes(&mut flush_push_queue, &responses_tx, &err_pool);
                     std::thread::yield_now();
@@ -519,7 +529,7 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
     StoreLoop {
         requests: requests_tx,
         responses: responses_rx,
-        handle,
+        _handle: handle,
     }
 }
 
@@ -569,6 +579,31 @@ fn drain_puts(
         };
         responses_tx
             .send(Response::Put(response))
+            .expect("send put response");
+    }
+}
+
+fn drain_deletes(
+    queue: &mut VecDeque<(
+        necronomicon::kv_store_codec::Delete<SharedImpl>,
+        store::Delete,
+    )>,
+    responses_tx: &Sender<Response>,
+    err_pool: &PoolImpl,
+) {
+    for (request, delete) in queue.drain(..) {
+        let response = match delete.commit() {
+            Ok(_) => request.ack(),
+            Err(err) => {
+                let mut owned = err_pool.acquire("error", BufferOwner::Error);
+                request.nack(
+                    necronomicon::INTERNAL_ERROR,
+                    Some(ByteStr::from_owned(err.to_string(), &mut owned).expect("err reason")),
+                )
+            }
+        };
+        responses_tx
+            .send(Response::Delete(response))
             .expect("send put response");
     }
 }
@@ -634,11 +669,7 @@ where
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(super) enum BufferOwner {
-    Graveyard,
-    Delete,
     Get,
-    Init,
-    Insert,
     Peek,
     PopFront,
     Error,
@@ -647,11 +678,7 @@ pub(super) enum BufferOwner {
 impl necronomicon::BufferOwner for BufferOwner {
     fn why(&self) -> &'static str {
         match self {
-            Self::Graveyard => "graveyard",
-            Self::Delete => "store delete",
             Self::Get => "store get",
-            Self::Init => "store init",
-            Self::Insert => "store insert",
             Self::Peek => "deque peek",
             Self::PopFront => "deque pop front",
             Self::Error => "response error",

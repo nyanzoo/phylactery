@@ -15,16 +15,6 @@ pub(crate) struct Get {
     pub metadata: Metadata,
 }
 
-impl Get {
-    pub(crate) fn lookup(&self) -> Lookup {
-        self.lookup
-    }
-
-    pub(crate) fn metadata(&self) -> &Metadata {
-        &self.metadata
-    }
-}
-
 impl Shard {
     pub(crate) fn get(
         &self,

@@ -13,8 +13,6 @@ use crate::{
 
 use super::MetaState;
 
-mod buffer_owner;
-
 mod error;
 pub use error::Error;
 
@@ -70,17 +68,6 @@ impl Metadata {
             offset: 0,
             len: 0,
             state: MetaState::Compacting,
-        }
-    }
-
-    pub fn dig_up(self, file: u64, offset: u64, len: u64) -> Self {
-        Self {
-            mask: MASK,
-            crc: Self::generate_crc(file, offset, len, MetaState::Full.into()),
-            file,
-            offset,
-            len,
-            state: MetaState::Full,
         }
     }
 
@@ -189,11 +176,6 @@ where
         let key = BinaryData::decode_owned(reader, buffer)?;
         Ok(Self { meta, key })
     }
-}
-
-// NOTE: keep in sync with `Metadata` struct
-pub(super) const fn metadata_block_size(key_size: usize) -> usize {
-    Metadata::size() + key_size
 }
 
 pub(crate) fn decode_key<B>(

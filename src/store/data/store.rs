@@ -12,8 +12,6 @@ use crate::{
 use super::{shard::Shard, Config};
 
 pub struct Store {
-    /// The path to the data directory.
-    dir: String,
     /// A sharded set of files for storing data entries.
     shards: Vec<Shard>,
 }
@@ -35,10 +33,7 @@ impl Store {
             shards_v.push(shard);
         }
 
-        Ok(Self {
-            dir,
-            shards: shards_v,
-        })
+        Ok(Self { shards: shards_v })
     }
 
     pub fn compact(

@@ -29,13 +29,6 @@ pub struct Graveyard {
 // 6. flush the metadata file
 // if any step fails we can crash and recover from the .old file
 
-#[derive(Copy, Clone, Debug)]
-pub struct CopyRange {
-    file: u64,
-    start: u64,
-    end: u64,
-}
-
 pub struct Compaction {
     file_to_tombs: BTreeMap<Location, Vec<Range<usize>>>,
 }

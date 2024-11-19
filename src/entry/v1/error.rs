@@ -1,5 +1,5 @@
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error("data crc mismatch: {expected} != {actual}")]
     DataCrcMismatch { expected: u32, actual: u32 },
 

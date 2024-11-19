@@ -10,15 +10,7 @@ use crate::{
 mod error;
 pub use error::Error;
 
-#[derive(Copy, Clone, Debug)]
-pub(super) struct Tombstone {
-    len: usize,
-    offset: usize,
-}
-
 pub(super) struct Shard {
-    dir: String,
-    shard: u64,
     deque: Deque,
 }
 
@@ -32,7 +24,7 @@ impl Shard {
         let path = format!("{}/{}", dir, shard);
         let deque = Deque::new(path, node_size, max_disk_usage, Version::V1)?;
 
-        Ok(Self { dir, shard, deque })
+        Ok(Self { deque })
     }
 
     pub(super) fn compact(

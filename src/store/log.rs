@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt::{self, Debug, Display, Formatter},
@@ -92,7 +94,7 @@ impl TryFrom<String> for EntryPath {
 
 #[derive(Debug)]
 #[repr(C)]
-pub(crate) struct Entry {
+pub struct Entry {
     // `char` is 4 bytes, so this is 256 - 8 bytes to keep the entry size 256 bytes.
     file_path: EntryPath,
     // a hash for determining if the entry is different

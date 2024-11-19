@@ -191,6 +191,7 @@ impl File {
         self.buffer.compact(ranges_to_delete).map_err(Error::Buffer)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn location(&self) -> &Location {
         &self.location
     }

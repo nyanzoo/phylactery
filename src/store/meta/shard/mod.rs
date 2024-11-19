@@ -44,7 +44,6 @@ pub struct Lookup {
 
 pub(super) struct Shard {
     buffer: MmapBuffer,
-    dir: String,
     shard: usize,
     cursor: usize,
     tombstones: Vec<Tombstone>,
@@ -105,7 +104,6 @@ impl Shard {
 
         Ok(Self {
             buffer,
-            dir,
             shard,
             cursor: start,
             tombstones,

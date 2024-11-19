@@ -23,8 +23,6 @@ struct VNode {
 
 /// The metadata store. This manages all metadata pertaining to actual data entries.
 pub struct Store {
-    /// The path to the metadata directory.
-    dir: String,
     /// The metadata pool for allocating metadata entries in memory.
     pool: PoolImpl,
     /// A sharded set of files for storing metadata entries.
@@ -46,7 +44,6 @@ impl Store {
             shards_v.push(shard);
         }
         Ok(Self {
-            dir,
             pool,
             shards: shards_v,
             hasher,
@@ -132,9 +129,10 @@ mod tests {
         let Get { lookup, .. } = store.get(key.clone()).unwrap().unwrap();
         assert_eq!(lookup, location);
 
-        let mut delete = store.delete(key.clone()).unwrap().unwrap();
+        let delete = store.delete(key.clone()).unwrap().unwrap();
+        let del_location = delete.lookup();
         delete.commit().unwrap();
-        assert_eq!(location, delete.lookup());
+        assert_eq!(location, del_location);
 
         assert!(store.get(key).unwrap().is_none());
     }

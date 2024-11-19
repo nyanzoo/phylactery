@@ -186,6 +186,7 @@ impl InnerFile {
 pub struct LazyWriteFile(Vec<u8>, PathBuf);
 
 impl LazyWriteFile {
+    #[allow(dead_code)]
     fn delete(&mut self) -> Result<(), Error> {
         std::fs::remove_file(&self.1)?;
         self.0 = vec![];

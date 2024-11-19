@@ -1,4 +1,4 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 

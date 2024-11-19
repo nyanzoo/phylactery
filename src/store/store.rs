@@ -22,11 +22,13 @@ use super::{
     log::Log,
     meta::{
         self,
-        shard::{self, delete::Delete},
+        shard::{self},
         store::Store as MetaDataStore,
     },
     BufferOwner, Config,
 };
+
+pub use super::meta::shard::delete::Delete;
 
 const LRU_CAPACITY: usize = 10 * 1000;
 
@@ -71,6 +73,9 @@ pub struct Store<'a> {
     deques: BTreeMap<String, (Deque, Option<DequePeekIter<'a>>)>,
     graveyards: Vec<Graveyard>,
     cache: Lru<Vec<u8>, Vec<u8>>,
+    // TODO(rojang):
+    // - transaction log thing
+    #[allow(dead_code)]
     log: Log,
 }
 
@@ -203,6 +208,9 @@ impl<'a> Store<'a> {
         deque.pop(buffer).map_err(Error::Deque)
     }
 
+    // TODO(rojang):
+    // use peek
+    #[allow(dead_code)]
     pub fn peek(
         &'a mut self,
         dir: ByteStr<SharedImpl>,

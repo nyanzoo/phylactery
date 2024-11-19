@@ -51,7 +51,7 @@ where
         2 + self.data.len() as u32 + size_of::<u32>() as u32
     }
 
-    pub fn verify(&self) -> Result<(), Error> {
+    pub(crate) fn verify(&self) -> Result<(), Error> {
         let crc = generate_crc(self.data.data().as_slice());
         if crc != self.crc {
             return Err(Error::DataCrcMismatch {

@@ -1,11 +1,6 @@
-use std::{
-    io::{Read, Write},
-    mem::size_of,
-};
+use std::io::{Read, Write};
 
 use necronomicon::{Decode, Encode};
-
-pub const TOMBSTONE_LEN: usize = size_of::<u32>() + size_of::<u64>() * 3;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Tombstone {

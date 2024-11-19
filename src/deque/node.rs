@@ -94,6 +94,7 @@ impl DequeNode {
         self.buffer_size
     }
 
+    #[allow(dead_code)]
     pub(crate) fn remaining(&self) -> Result<Remaining, Error> {
         let file = self.open()?;
         Ok(file.remaining())

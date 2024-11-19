@@ -17,19 +17,16 @@ pub(crate) struct PreparePut {
 }
 
 pub(crate) struct Put {
+    #[cfg(test)]
     lookup: Lookup,
-    metadata: Metadata,
     flush: Flush<<MmapBuffer as Buffer>::Flushable>,
     prepare_flush: Flush<<MmapBuffer as Buffer>::Flushable>,
 }
 
 impl Put {
+    #[cfg(test)]
     pub(crate) fn lookup(&self) -> Lookup {
         self.lookup
-    }
-
-    pub(crate) fn metadata(&self) -> &Metadata {
-        &self.metadata
     }
 
     pub(crate) fn prepare(&mut self) -> Result<(), Error> {
@@ -102,8 +99,8 @@ impl Shard {
         self.entries.entry(hash).or_default().push_back(lookup);
 
         Ok(Put {
+            #[cfg(test)]
             lookup,
-            metadata,
             flush,
             prepare_flush,
         })

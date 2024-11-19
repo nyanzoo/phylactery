@@ -29,7 +29,7 @@ impl Delete {
     }
 
     // TODO: would be better to probably just call flush on the file directly.
-    pub(crate) fn commit(&mut self) -> Result<(), Error> {
+    pub(crate) fn commit(self) -> Result<(), Error> {
         self.flush.flush()?;
         Ok(())
     }

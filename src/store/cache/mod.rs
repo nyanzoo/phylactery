@@ -24,6 +24,7 @@ where
         self.inner.insert(key, value);
     }
 
+    #[allow(dead_code)]
     pub fn remove(&mut self, key: &K) -> Option<V> {
         self.inner.remove(key)
     }
