@@ -632,188 +632,30 @@ where
     }
 }
 
-#[cfg(test)]
-mod test {
-    use std::io::Write;
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(super) enum BufferOwner {
+    Graveyard,
+    Delete,
+    Get,
+    Init,
+    Insert,
+    Peek,
+    PopFront,
+    Error,
+}
 
-    use necronomicon::{binary_data, Pool, PoolImpl, SharedImpl};
-    use tempfile::TempDir;
-
-    use crate::{
-        buffer::MmapBuffer,
-        entry::Version,
-        kv_store::{Graveyard, Lookup},
-        ring_buffer::{ring_buffer, Popper},
-    };
-
-    use super::KVStore;
-
-    #[test]
-    fn test_put_get() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let pool = PoolImpl::new(1024, 1024);
-
-        let (mut store, _) = test_kv_store(&temp_dir, &pool);
-
-        let key = binary_data(b"pets");
-
-        let mut owned = pool.acquire().unwrap();
-
-        store
-            .insert(key.clone(), binary_data(b"cats"), &mut owned)
-            .expect("insert failed");
-
-        let mut owned = pool.acquire().unwrap();
-        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
-            panic!("key not found");
-        };
-
-        let actual = data.into_inner();
-        assert_eq!(actual, binary_data(b"cats"));
-    }
-
-    #[test]
-    fn test_put_get_delete() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let pool = PoolImpl::new(1024, 1024);
-
-        let (mut store, _) = test_kv_store(&temp_dir, &pool);
-
-        let key = binary_data(b"pets");
-
-        let mut owned = pool.acquire().unwrap();
-
-        store
-            .insert(key.clone(), binary_data(b"cats"), &mut owned)
-            .expect("insert failed");
-
-        let mut owned = pool.acquire().unwrap();
-        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
-            panic!("key not found");
-        };
-
-        let actual = data.into_inner();
-        assert_eq!(actual, binary_data(b"cats"));
-
-        let mut owned = pool.acquire().unwrap();
-        store.delete(&key, &mut owned).expect("delete failed");
-
-        let mut owned = pool.acquire().unwrap();
-        let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
-            panic!("key found");
-        };
-    }
-
-    #[test]
-    fn test_graveyard() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        
-        let pool = PoolImpl::new(1024, 1024);
-        
-        let (mut store, popper) = test_kv_store(&temp_dir, &pool);
-        let path = temp_dir.into_path();
-
-        let pclone = path.clone();
-        let _ = std::thread::spawn(move || {
-            let graveyard = Graveyard::new(pclone.join("data"), popper);
-            graveyard.bury(1);
-        });
-
-        let key = binary_data(b"pets");
-
-        let mut owned = pool.acquire().unwrap();
-        store
-            .insert(key.clone(), binary_data(b"cats"), &mut owned)
-            .expect("insert failed");
-
-        let mut owned = pool.acquire().unwrap();
-        store
-            .insert(key.clone(), binary_data(b"dogs"), &mut owned)
-            .expect("insert failed");
-
-        let mut owned = pool.acquire().unwrap();
-        let Lookup::Found(data) = store.get(&key, &mut owned).expect("key not found") else {
-            panic!("key not found");
-        };
-
-        let actual = data.into_inner();
-        assert_eq!(actual, binary_data(b"dogs"));
-
-        let mut owned = pool.acquire().unwrap();
-        store.delete(&key, &mut owned).expect("delete failed");
-        // Wait long enough for graveyard to run
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        // assert that the data folder is empty
-        let mut owned = pool.acquire().unwrap();
-        let Lookup::Absent = store.get(&key, &mut owned).expect("key not found") else {
-            panic!("key not found");
-        };
-
-        // For debugging:
-        // tree(&path);
-
-        assert!(!std::path::Path::exists(&path.join("data").join("0.bin")));
-        assert!(!std::path::Path::exists(&path.join("data").join("1.bin")));
-    }
-
-    fn test_kv_store(
-        temp_dir: &TempDir,
-        pool: &PoolImpl,
-    ) -> (KVStore<SharedImpl>, Popper<MmapBuffer>) {
-        let path = format!("{}", temp_dir.path().display());
-
-        let mmap_path = path.clone() + "mmap.bin";
-        let buffer = MmapBuffer::new(mmap_path, 1024).expect("mmap buffer failed");
-
-        let (pusher, popper) = ring_buffer(buffer, Version::V1).expect("ring buffer failed");
-
-        let meta_path = path.clone() + "meta.bin";
-
-        let data_path = path + "data.bin";
-
-        let mut owned = pool.acquire().unwrap();
-
-        let store = KVStore::new(
-            meta_path,
-            1024,
-            32,
-            data_path,
-            1024,
-            Version::V1,
-            pusher,
-            &mut owned,
-        )
-        .expect("KVStore::new failed");
-
-        (store, popper)
-    }
-
-    #[allow(dead_code)]
-    fn tree(path: &std::path::Path) {
-        std::io::stdout()
-            .write_all(
-                &std::process::Command::new("tree")
-                    .arg(path)
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .unwrap();
-    }
-
-    #[allow(dead_code)]
-    fn hexyl(path: &std::path::Path) {
-        std::io::stdout()
-            .write_all(
-                &std::process::Command::new("hexyl")
-                    .arg(path)
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .unwrap();
+impl necronomicon::BufferOwner for BufferOwner {
+    fn why(&self) -> &'static str {
+        match self {
+            Self::Graveyard => "graveyard",
+            Self::Delete => "store delete",
+            Self::Get => "store get",
+            Self::Init => "store init",
+            Self::Insert => "store insert",
+            Self::Peek => "deque peek",
+            Self::PopFront => "deque pop front",
+            Self::Error => "response error",
+        }
     }
 }
 

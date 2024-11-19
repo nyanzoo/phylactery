@@ -38,14 +38,6 @@ necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "deve
     "timeout",
 ] }
 
-necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop", features = [
-    "test",
-] }
-
-[[bench]]
-name = "ring_buffer"
-harness = false
-
 [[bench]]
 name = "deque"
 harness = false
