@@ -52,11 +52,9 @@ impl Shard {
     where
         O: Owned,
     {
-        let res = self
-            .deque
+        self.deque
             .get(file, offset, buffer, version)
-            .map_err(Error::Deque);
-        res
+            .map_err(Error::Deque)
     }
 
     pub(super) fn put(&mut self, value: &[u8]) -> Result<Push, Error> {

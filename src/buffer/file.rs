@@ -196,8 +196,13 @@ impl LazyWriteFile {
         self.0.len()
     }
 
-    fn flush(&mut self) -> Result<(), Error> {
-        let mut file = std::fs::OpenOptions::new().write(true).open(&self.1)?;
+    fn flush(&self) -> Result<(), Error> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.1)
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::Other, format!("{:?} - {err:?}", self.1))
+            })?;
         file.write_all(&self.0)?;
         file.flush()?;
         // self.0 = vec![0; self.0.len()];

@@ -6,8 +6,6 @@ use std::{
     rc::Rc,
 };
 
-use log::error;
-
 use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
 mod error;

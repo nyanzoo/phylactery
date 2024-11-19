@@ -5,7 +5,7 @@ use necronomicon::{BinaryData, ByteStr, OwnedImpl, PoolImpl, Shared, SharedImpl}
 
 use crate::{
     buffer::{Flush, LazyWriteFileFlush},
-    deque::{self, Deque, Push},
+    deque::{self, Deque},
     entry::{
         v1::{self},
         Readable, Version,
@@ -47,6 +47,17 @@ impl Put {
         self.meta
             .commit()
             .map_err(crate::store::meta::Error::Shard)?;
+        Ok(())
+    }
+}
+
+pub struct Push {
+    queue_flush: Flush<LazyWriteFileFlush>,
+}
+
+impl Push {
+    pub fn commit(self) -> Result<(), Error> {
+        self.queue_flush.flush()?;
         Ok(())
     }
 }
@@ -163,7 +174,7 @@ impl<'a> Store<'a> {
         &mut self,
         dir: ByteStr<SharedImpl>,
         value: BinaryData<SharedImpl>,
-    ) -> Result<(), Error> {
+    ) -> Result<Push, Error> {
         let Ok(dir) = dir.as_str().map(|s| s.to_owned()) else {
             return Err(Error::DequeInvalidKey);
         };
@@ -171,8 +182,10 @@ impl<'a> Store<'a> {
             .deques
             .get_mut(&dir)
             .ok_or_else(|| Error::DequeNotFound(dir))?;
-        deque.push(value.data().as_slice())?;
-        Ok(())
+        match deque.push(value.data().as_slice())? {
+            deque::Push::Entry { flush, .. } => Ok(Push { queue_flush: flush }),
+            deque::Push::Full => Err(Error::StoreFull),
+        }
     }
 
     pub fn pop_front(
@@ -322,7 +335,7 @@ impl<'a> Store<'a> {
             .data
             .put(prepare.lookup.shard, value.data().as_slice())?
         {
-            Push::Entry {
+            deque::Push::Entry {
                 file,
                 offset,
                 len,
@@ -337,7 +350,7 @@ impl<'a> Store<'a> {
                     meta: meta_put,
                 })
             }
-            Push::Full => Err(Error::StoreFull),
+            deque::Push::Full => Err(Error::StoreFull),
         };
 
         if res.is_ok() {

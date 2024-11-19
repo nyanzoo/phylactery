@@ -12,6 +12,9 @@
 # .vscode files
 .vscode
 
-# tarpaulin coverage files
+# coverage files
 *.profraw
 lcov.info
+
+# flamegraph files
+flamegraph.svg

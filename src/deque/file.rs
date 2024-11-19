@@ -42,7 +42,7 @@ where
     owner: O,
 }
 
-impl<'a, P, O> Iterator for Peek<P, O>
+impl<P, O> Iterator for Peek<P, O>
 where
     P: Pool,
     O: BufferOwner,

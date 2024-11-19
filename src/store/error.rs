@@ -29,7 +29,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     #[error("transaction log is full '{0}'")]
-    LogFull(super::log::Entry),
+    LogFull(Box<super::log::Entry>),
 
     #[error("meta error: {0}")]
     Meta(#[from] meta::Error),

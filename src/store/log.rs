@@ -116,8 +116,8 @@ where
     W: Write,
 {
     fn encode(&self, buffer: &mut W) -> Result<(), necronomicon::Error> {
-        buffer.write(&self.file_path.0)?;
-        buffer.write(&self.hash.to_be_bytes())?;
+        buffer.write_all(&self.file_path.0)?;
+        buffer.write_all(&self.hash.to_be_bytes())?;
 
         Ok(())
     }
@@ -177,7 +177,7 @@ impl Log {
             self.used.insert(entry.file_path, free);
             Ok(free)
         } else {
-            Err(Error::LogFull(entry))
+            Err(Error::LogFull(entry.into()))
         }
     }
 
