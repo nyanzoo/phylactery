@@ -1,4 +1,7 @@
-use crate::{buffer::Buffer, Error};
+use crate::{buffer::Buffer, MASK_0, MASK_1, MASK_2, MASK_3};
+
+mod error;
+pub use error::Error;
 
 pub mod v1;
 
@@ -36,10 +39,10 @@ where
         // TODO: should be little endian?
         // BAD5EED5
         match header {
-            [_, 0xba, 0xd5, 0xee, 0xd5] => break true,
-            [_, _, 0xba, 0xd5, 0xee] => off += 2,
-            [_, _, _, 0xba, 0xd5] => off += 3,
-            [_, _, _, _, 0xba] => off += 4,
+            [_, MASK_3, MASK_2, MASK_1, MASK_0] => break true,
+            [_, _, MASK_3, MASK_2, MASK_1] => off += 2,
+            [_, _, _, MASK_3, MASK_2] => off += 3,
+            [_, _, _, _, MASK_3] => off += 4,
             _ => off += 5,
         }
 
@@ -55,13 +58,12 @@ where
         let mut metas = vec![];
         while (off as u64 + Metadata::struct_size(version) as u64) < buffer.capacity() {
             // read the metadata.
-            if let Ok(metadata) =
-                buffer.decode_at::<Metadata>(off, Metadata::struct_size(version) as usize)
+            if let Ok(metadata) = buffer.decode_at::<Metadata>(off, Metadata::struct_size(version))
             {
                 metas.push(metadata);
 
                 // increment the offset by the size of the metadata.
-                off += Metadata::struct_size(version) as usize;
+                off += Metadata::struct_size(version);
                 // increment the offset by the size of the data.
                 off += metadata.data_size() as usize;
             } else {
@@ -69,8 +71,6 @@ where
             }
         }
 
-        // The last entry is the one with the highest entry value.
-        metas.sort();
         let metadata = metas.last().expect("ptrs should not be empty");
         return Ok(Some(*metadata));
 
@@ -95,10 +95,10 @@ mod tests {
     use super::{v1, Metadata, Version};
 
     #[test]
-    fn test_metadata_size() {
+    fn metadata_size() {
         // 1 bytes for the enum variant
         // rest from actual struct
-        assert_eq!(Metadata::struct_size(Version::V1), 37);
+        assert_eq!(Metadata::struct_size(Version::V1), 29);
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
         assert!(result.is_ok());
 
         let pool = PoolImpl::new(1024, 1);
-        let mut owned = pool.acquire().unwrap();
+        let mut owned = pool.acquire("readable", "readable decode");
 
         // verify that if deserialized, the data is the same
         let result = Readable::decode_owned(&mut Cursor::new(&mut buf), &mut owned);

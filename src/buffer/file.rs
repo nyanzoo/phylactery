@@ -1,48 +1,62 @@
-use std::{cell::RefCell, ops::Range, path::Path, rc::Rc};
-
-use memmap2::MmapMut;
+use std::{
+    cell::RefCell,
+    io::{Read, Write},
+    ops::Range,
+    path::PathBuf,
+    rc::Rc,
+};
 
 use necronomicon::{Decode, DecodeOwned, Encode, Owned};
 
-use super::{Buffer, Error, Flush, Flushable, Inner, Reader, Writer};
+use super::{inverse_ranges, Buffer, Error, Flush, Flushable, Inner, Reader, Writer};
 
-type InnerMmap = Inner<MmapMut>;
+type InnerFile = Inner<LazyWriteFile>;
 
-pub struct MmapBufferFlush(Rc<RefCell<InnerMmap>>);
+pub struct LazyWriteFileFlush(Rc<RefCell<InnerFile>>);
 
-impl Flushable for MmapBufferFlush {
+impl Flushable for LazyWriteFileFlush {
     fn flush(&self) -> Result<(), Error> {
         let mut inner = self.0.borrow_mut();
         inner.flush()
     }
 }
 
-pub struct MmapBuffer(Rc<RefCell<InnerMmap>>);
+// TODO: need to read file on create and then can just write to file on flush
+#[derive(Clone)]
+pub struct FileBuffer(Rc<RefCell<InnerFile>>);
 
-impl MmapBuffer {
-    pub fn new<P>(path: P, size: u64) -> std::io::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        // Don't truncate to allow for recovery.
-        #[allow(clippy::suspicious_open_options)]
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path)?;
-        file.set_len(size)?;
-        let mmap = unsafe { MmapMut::map_mut(&file) }?;
+impl FileBuffer {
+    pub fn new(size: u64, file: PathBuf) -> std::io::Result<Self> {
+        let buffer = vec![0; size as usize];
+        {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&file)?;
+        }
+        let inner = InnerFile::new(LazyWriteFile(buffer, file));
+        let rc = Rc::new(RefCell::new(inner));
+        Ok(Self(rc))
+    }
 
-        let inner = InnerMmap::new(mmap);
+    pub fn read(size: u64, file: PathBuf) -> std::io::Result<Self> {
+        let mut buffer = vec![0; size as usize];
+        {
+            let mut file = std::fs::OpenOptions::new().read(true).open(&file)?;
+            // let file_size = usize::try_from(file.metadata()?.len()).expect("u64 -> usize");
+            file.read_exact(&mut buffer[..size as usize])?;
+        }
+
+        let inner = InnerFile::new(LazyWriteFile(buffer, file));
         let rc = Rc::new(RefCell::new(inner));
         Ok(Self(rc))
     }
 }
 
-impl Buffer for MmapBuffer {
-    type Flushable = MmapBufferFlush;
-    type Inner = MmapMut;
+impl Buffer for FileBuffer {
+    type Flushable = LazyWriteFileFlush;
+    type Inner = LazyWriteFile;
 
     fn decode_at<T>(&self, off: usize, len: usize) -> Result<T, Error>
     where
@@ -84,9 +98,11 @@ impl Buffer for MmapBuffer {
                 capacity,
             });
         }
+
         let mut writer = Writer::new(self.0.clone(), off, len);
         data.encode(&mut writer)?;
-        let flush = MmapBufferFlush(self.0.clone());
+
+        let flush = LazyWriteFileFlush(self.0.clone());
         Ok(Flush::Flush(flush))
     }
 
@@ -117,7 +133,7 @@ impl Buffer for MmapBuffer {
         let exclusive = exclusive.as_mut();
         exclusive[start..end].copy_from_slice(&buf[..(end - start)]);
 
-        let flush = MmapBufferFlush(self.0.clone());
+        let flush = LazyWriteFileFlush(self.0.clone());
         Ok(Flush::Flush(flush))
     }
 
@@ -130,8 +146,12 @@ impl Buffer for MmapBuffer {
     }
 
     fn compact(&self, ranges: &[Range<usize>]) -> Result<Flush<Self::Flushable>, Error> {
-        let copy_ranges =
-            super::inverse_ranges(ranges, self.capacity().try_into().expect("u64 -> usize"));
+        if ranges.is_empty() {
+            return Ok(Flush::NoOp);
+        }
+
+        let copy_ranges = inverse_ranges(ranges, self.capacity().try_into().expect("u64 -> usize"));
+
         let mut exclusive = self.0.borrow_mut();
         exclusive.dirty = true;
         let exclusive = exclusive.as_mut();
@@ -142,20 +162,63 @@ impl Buffer for MmapBuffer {
             exclusive.copy_within(range, dst);
             dst += len;
         }
-        Ok(Flush::Flush(MmapBufferFlush(self.0.clone())))
+
+        Ok(Flush::Flush(LazyWriteFileFlush(self.0.clone())))
     }
 }
 
-impl InnerMmap {
+impl InnerFile {
     fn capacity(&self) -> u64 {
         unsafe { &*self.inner.get() }.len() as u64
     }
 
     fn flush(&mut self) -> Result<(), Error> {
         if self.dirty {
-            unsafe { &*self.inner.get() }.flush()?;
+            let inner = unsafe { &mut *self.inner.get() };
+            inner.flush()?;
             self.dirty = false;
         }
+
         Ok(())
+    }
+}
+
+pub struct LazyWriteFile(Vec<u8>, PathBuf);
+
+impl LazyWriteFile {
+    #[allow(dead_code)]
+    fn delete(&mut self) -> Result<(), Error> {
+        std::fs::remove_file(&self.1)?;
+        self.0 = vec![];
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.1)
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::Other, format!("{:?} - {err:?}", self.1))
+            })?;
+        file.write_all(&self.0)?;
+        file.flush()?;
+        // self.0 = vec![0; self.0.len()];
+        Ok(())
+    }
+}
+
+impl AsRef<[u8]> for LazyWriteFile {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsMut<[u8]> for LazyWriteFile {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.0
     }
 }

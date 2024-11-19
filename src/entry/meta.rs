@@ -2,32 +2,24 @@ use std::io::{Read, Write};
 
 use necronomicon::{Decode, Encode};
 
-use crate::Error;
+use super::{v1, version::VERSION_SIZE, Error, Version};
 
-use super::{v1, version::VERSION_SIZE, Version};
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub enum Metadata {
     Version1(v1::Metadata),
 }
 
 impl Metadata {
-    pub fn new(
-        version: Version,
-        entry: u64,
-        read_ptr: u64,
-        write_ptr: u64,
-        data_size: u32,
-    ) -> Self {
+    pub fn new(version: Version, read_ptr: u64, write_ptr: u64, data_size: u32) -> Self {
         match version {
-            Version::V1 => Self::Version1(v1::Metadata::new(entry, read_ptr, write_ptr, data_size)),
+            Version::V1 => Self::Version1(v1::Metadata::new(read_ptr, write_ptr, data_size)),
         }
     }
 
-    pub const fn struct_size(version: Version) -> u32 {
+    pub const fn struct_size(version: Version) -> usize {
         match version {
-            Version::V1 => VERSION_SIZE as u32 + v1::Metadata::struct_size(),
+            Version::V1 => VERSION_SIZE + v1::Metadata::struct_size(),
         }
     }
 
@@ -40,12 +32,6 @@ impl Metadata {
     pub fn write_ptr(&self) -> u64 {
         match self {
             Self::Version1(metadata) => metadata.write_ptr(),
-        }
-    }
-
-    pub fn entry(&self) -> u64 {
-        match self {
-            Self::Version1(metadata) => metadata.entry(),
         }
     }
 
@@ -75,7 +61,7 @@ impl Metadata {
 
     pub fn verify(&self) -> Result<(), Error> {
         match self {
-            Self::Version1(metadata) => metadata.verify(),
+            Self::Version1(metadata) => metadata.verify().map_err(Error::V1),
         }
     }
 

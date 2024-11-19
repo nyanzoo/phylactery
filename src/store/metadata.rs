@@ -1,11 +1,8 @@
-use std::{
-    io::{Read, Write},
-    mem::size_of,
-};
+use std::io::{Read, Write};
 
 use necronomicon::{BinaryData, Decode, DecodeOwned, Encode, Owned, Shared};
 
-use super::{graveyard::Tombstone, MetaState};
+use super::MetaState;
 
 pub(crate) struct MetadataRead<S>
 where
@@ -29,25 +26,6 @@ pub(crate) struct MetadataWrite<'a> {
     pub key: &'a [u8],
     // We set the tombstone and do not accept additional data until we have compacted.
     pub state: MetaState,
-}
-
-// NOTE: keep in sync with `Metadata` struct
-pub(crate) const fn metadata_block_size(max_key_size: usize) -> usize {
-    size_of::<u32>() + size_of::<u64>() * 3 + max_key_size + size_of::<MetaState>()
-}
-
-impl<S> From<MetadataRead<S>> for Tombstone
-where
-    S: Shared,
-{
-    fn from(val: MetadataRead<S>) -> Self {
-        Self {
-            crc: val.crc,
-            file: val.file,
-            offset: val.offset,
-            len: val.len,
-        }
-    }
 }
 
 impl<'a, S> From<&'a MetadataRead<S>> for MetadataWrite<'a>

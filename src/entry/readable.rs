@@ -2,9 +2,7 @@ use std::io::Read;
 
 use necronomicon::{BinaryData, Decode, DecodeOwned, Owned, Shared};
 
-use crate::Error;
-
-use super::{v1, version::VERSION_SIZE, Version};
+use super::{v1, version::VERSION_SIZE, Error, Version};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Readable<S>
@@ -38,7 +36,7 @@ where
 
     pub fn verify(&self) -> Result<(), Error> {
         match self {
-            Self::Version1(data) => data.verify(),
+            Self::Version1(data) => data.verify().map_err(Error::V1),
         }
     }
 

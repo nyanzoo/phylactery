@@ -2,9 +2,7 @@ use std::{io::Read, mem::size_of};
 
 use necronomicon::{BinaryData, Decode, DecodeOwned, Owned, Shared};
 
-use crate::Error;
-
-use super::generate_crc;
+use super::{generate_crc, Error};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Readable<S>
@@ -53,7 +51,7 @@ where
         2 + self.data.len() as u32 + size_of::<u32>() as u32
     }
 
-    pub fn verify(&self) -> Result<(), Error> {
+    pub(crate) fn verify(&self) -> Result<(), Error> {
         let crc = generate_crc(self.data.data().as_slice());
         if crc != self.crc {
             return Err(Error::DataCrcMismatch {

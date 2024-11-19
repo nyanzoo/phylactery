@@ -1,3 +1,6 @@
+mod error;
+pub(crate) use error::Error;
+
 mod meta;
 pub use meta::Metadata;
 
