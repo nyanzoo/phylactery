@@ -24,3 +24,9 @@ see `https://github.com/taiki-e/cargo-llvm-cov#installation` for instructions.
 
 ## Contributing
 TODO
+
+## TODO
+- [ ] store needs to have patch prepare and commit semantics with the ability to determine if a duplicate request came in (idempotency). This also has to be persisted to disk. We could just have an mmap of some size to fit a reasonable amount of patches in memory. When a patch completes we zero out that location in the mmap. We can also use a bloom filter to try optimize the search for duplicates.
+- [ ] need to be able to transfer the contents of the store efficiently to another store, this can be done by just copying the files, but it would be better to only send the files we care about. One way to do this is to limit the key size and other fields to make sure we can have a fixed size block for storing what files we care about. The other trick is have a counter/hash for the store to determine if the store has changed. But we can probably start with just zipping up the files and sending them over?
+- [ ] need to be able to resend messages in the event of client failure, this can be done  by just keeping a queue of messages that have been sent
+- [ ] would be good to add etags to the store to prevent overwriting data

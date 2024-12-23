@@ -24,7 +24,7 @@ pub fn push_pop(c: &mut Criterion) {
     let pool = PoolImpl::new(MAX_DATA_SIZE, 1000);
 
     for i in (1..=10).into_iter().map(|i| 2usize.pow(i)) {
-        group.bench_with_input(BenchmarkId::new("mmap", i), &i, |b, i| {
+        group.bench_with_input(BenchmarkId::new("test 1 - push then pop", i), &i, |b, i| {
             let data = vec![7; *i];
 
             b.iter(|| {

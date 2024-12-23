@@ -32,6 +32,7 @@ matches = "0"
 rand = "0.8"
 tempfile = "3"
 test-case = "3"
+uuid = { version = "0.8", features = ["v4"] }
 
 necronomicon = { git = "https://github.com/nyanzoo/necronomicon", branch = "develop", features = [
     "test",

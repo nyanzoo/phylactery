@@ -89,6 +89,9 @@ impl PoolConfig {
 
 #[derive(Clone, Debug)]
 pub enum Request {
+    // System
+    Shutdown,
+
     // Deque
     Create(Create<SharedImpl>),
     Remove(DequeDelete<SharedImpl>),
@@ -104,6 +107,9 @@ pub enum Request {
 
 #[derive(Clone, Debug)]
 pub enum Response {
+    // System
+    Shutdown,
+
     // Deque
     Create(CreateAck<SharedImpl>),
     Remove(DequeDeleteAck<SharedImpl>),
@@ -120,6 +126,9 @@ pub enum Response {
 impl Ack<SharedImpl> for Response {
     fn header(&self) -> &Header {
         match self {
+            // System
+            Response::Shutdown => panic!("shutdown ack"),
+
             // Deque
             Response::Create(response) => response.header(),
             Response::Remove(response) => response.header(),
@@ -136,6 +145,9 @@ impl Ack<SharedImpl> for Response {
 
     fn response(&self) -> necronomicon::Response<SharedImpl> {
         match self {
+            // System
+            Response::Shutdown => panic!("shutdown ack"),
+
             // Deque
             Response::Create(response) => response.response(),
             Response::Remove(response) => response.response(),
@@ -189,6 +201,9 @@ impl Store {
             let responses = self.responses.clone();
             handles.push(std::thread::spawn(move || loop {
                 let response = store_responses.recv().expect("response");
+                if let Response::Shutdown = response {
+                    return;
+                }
                 responses.send(response).expect("send response");
             }));
         }
@@ -196,6 +211,17 @@ impl Store {
             match self.requests.recv() {
                 Ok(ref request) => {
                     let store = match request {
+                        // System
+                        Request::Shutdown => {
+                            for store in self.stores.iter_mut() {
+                                store
+                                    .requests
+                                    .send(Request::Shutdown)
+                                    .expect("send shutdown");
+                            }
+                            return;
+                        }
+
                         // Deque
                         Request::Create(request) => {
                             let store = self
@@ -312,6 +338,14 @@ fn store_loop(config: Config, pool: PoolImpl) -> StoreLoop {
         loop {
             match requests_rx.try_recv() {
                 Ok(request) => match request {
+                    // System
+                    Request::Shutdown => {
+                        responses_tx
+                            .send(Response::Shutdown)
+                            .expect("send shutdown ack");
+                        return;
+                    }
+
                     // Deque
                     Request::Create(request) => {
                         let mut owned = err_pool.acquire("error", BufferOwner::Error);
