@@ -12,7 +12,7 @@ pub struct Writable<'a> {
     pub(crate) crc: u32,
 }
 
-impl<'a, W> Encode<W> for Writable<'a>
+impl<W> Encode<W> for Writable<'_>
 where
     W: Write,
 {

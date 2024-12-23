@@ -44,7 +44,7 @@ where
     }
 }
 
-impl<'a, W> Encode<W> for MetadataWrite<'a>
+impl<W> Encode<W> for MetadataWrite<'_>
 where
     W: Write,
 {
