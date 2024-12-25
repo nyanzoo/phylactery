@@ -5,6 +5,9 @@ pub enum Error {
     #[error("buffer error: {0}")]
     Buffer(#[from] crate::buffer::Error),
 
+    #[error("decompression error: {0}")]
+    Decompression(#[from] lz4_flex::block::DecompressError),
+
     #[error("delete on open file: {0:?}")]
     DeleteOnOpenFile(Location),
 

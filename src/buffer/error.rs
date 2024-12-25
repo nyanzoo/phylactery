@@ -1,5 +1,11 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("compression error: {0}")]
+    Compression(#[from] lz4_flex::block::CompressError),
+
+    #[error("decompression error: {0}")]
+    Decompression(#[from] lz4_flex::block::DecompressError),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

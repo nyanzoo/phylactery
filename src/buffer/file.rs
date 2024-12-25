@@ -40,12 +40,14 @@ impl FileBuffer {
         Ok(Self(rc))
     }
 
-    pub fn read(size: u64, file: PathBuf) -> std::io::Result<Self> {
-        let mut buffer = vec![0; size as usize];
+    pub fn read(size: u64, file: PathBuf) -> Result<Self, Error> {
+        let mut buffer = vec![];
         {
             let mut file = std::fs::OpenOptions::new().read(true).open(&file)?;
             // let file_size = usize::try_from(file.metadata()?.len()).expect("u64 -> usize");
-            file.read_exact(&mut buffer[..size as usize])?;
+            assert_ne!(0, file.read_to_end(&mut buffer)?);
+            buffer = lz4_flex::decompress_size_prepended(&buffer)?;
+            buffer.resize(size as usize, 0);
         }
 
         let inner = InnerFile::new(LazyWriteFile(buffer, file));
@@ -204,7 +206,10 @@ impl LazyWriteFile {
             .map_err(|err| {
                 std::io::Error::new(std::io::ErrorKind::Other, format!("{:?} - {err:?}", self.1))
             })?;
-        file.write_all(&self.0)?;
+
+        let buffer = lz4_flex::compress_prepend_size(&self.0);
+        assert!(buffer.len() <= self.0.len());
+        file.write_all(&buffer)?;
         file.flush()?;
         // self.0 = vec![0; self.0.len()];
         Ok(())

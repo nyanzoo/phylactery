@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{create_dir_all, OpenOptions},
-    io::{BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufReader, Cursor, Read, Seek, SeekFrom, Write},
     ops::Range,
     path::Path,
 };
@@ -334,8 +334,11 @@ impl Deque {
         O: Owned,
     {
         let path = format!("{}/{:08x}.data", self.dir, file);
-        let file = OpenOptions::new().read(true).open(path.clone())?;
-        let mut buf_reader = BufReader::new(file);
+        let mut file = OpenOptions::new().read(true).open(path.clone())?;
+        let mut buffer = vec![];
+        assert_ne!(0, file.read_to_end(&mut buffer)?);
+        buffer = lz4_flex::decompress_size_prepended(&buffer)?;
+        let mut buf_reader = Cursor::new(buffer);
 
         let meta = Metadata::decode(&mut buf_reader)?;
         meta.verify()?;

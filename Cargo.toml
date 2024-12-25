@@ -16,6 +16,7 @@ hashring = "0.3"
 human-size = { version = "0", features = ["enable-serde"] }
 libc = "0.2"
 log = "0.4"
+lz4_flex = "0.11"
 memmap2 = "0"
 opentelemetry = { version = "0", features = ["logs"] }
 rayon = "1"
